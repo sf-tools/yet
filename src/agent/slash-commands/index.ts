@@ -1,0 +1,14 @@
+export { currentSlashCommandQuery, createSlashCommandRegistry } from './registry';
+export { acceptSlashCommandSuggestion } from './ui';
+export { builtinSlashCommands } from './builtins';
+export { exitSlashCommand } from './builtins/exit';
+
+export type {
+  ResolvedSlashCommand,
+  SlashCommand,
+  SlashCommandArgs,
+  SlashCommandContext,
+  SlashCommandParseResult,
+  SlashCommandRegistry,
+  SlashCommandSuggestion,
+} from './types';

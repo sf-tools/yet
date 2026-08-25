@@ -1,0 +1,9 @@
+/todo
+/dist
+/.yet-build
+
+# generated at build
+/src/config/version.ts
+
+*.env
+node_modules

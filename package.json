@@ -1,0 +1,58 @@
+{
+  "name": "@sf-tools/yet",
+  "version": "0.0.1",
+  "description": "Your best work is yet to come.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/yet.js",
+  "bin": {
+    "yet": "./bin/yet.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sf-tools/yet.git"
+  },
+  "homepage": "https://github.com/sf-tools/yet#readme",
+  "bugs": {
+    "url": "https://github.com/sf-tools/yet/issues"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "prepack": "ant build",
+    "typecheck": "tsc --noEmit",
+    "gen:version": "ant scripts/generate-version.mjs",
+    "build": "ant gen:version && ant scripts/build.mjs",
+    "compile": "ant build && ant compile dist/yet.js -o .yet-build/yet",
+    "start": "ant build && ant dist/yet.js",
+    "test": "ant scripts/build-tests.mjs && ant .yet-build/tests.js"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15",
+    "approximate-number": "^3.0.1",
+    "chalk": "^6.0.0",
+    "fuse.js": "^7.5.0",
+    "isomorphic-git": "^1.41.9",
+    "markdown-it": "^15.0.0",
+    "openai": "^7.5.0",
+    "ora": "^9.4.1",
+    "prismjs": "^1.30.0"
+  },
+  "devDependencies": {
+    "@types/approximate-number": "^2.1.0",
+    "@types/node": "^26.3.0",
+    "@types/prismjs": "^1.26.6",
+    "esbuild": "^0.28.2"
+  },
+  "trustedDependencies": [
+    "esbuild"
+  ]
+}
