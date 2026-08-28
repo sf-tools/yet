@@ -561,12 +561,22 @@ deepEqual(
   'Full Access disables both sandboxing and approvals',
 );
 
-const cli = handleCliArgs(['-m', 'gpt-5.6-terra', '--effort', 'medium', '--permissions', 'auto']);
+const cli = handleCliArgs([
+  '-m',
+  'gpt-5.6-terra',
+  '--effort',
+  'medium',
+  '--permissions',
+  'auto',
+  'fix',
+  'the tests',
+]);
 check(cli.kind === 'start', 'valid CLI arguments start Yet');
 if (cli.kind === 'start') {
   equal(cli.model, 'gpt-5.6-terra', 'CLI selects the requested model');
   equal(cli.thinkingMode, 'medium', 'CLI selects the requested effort');
   equal(cli.permissionMode, 'auto', 'CLI selects the requested permission mode');
+  equal(cli.prompt, 'fix the tests', 'CLI forwards positional arguments as the initial prompt');
 }
 const yolo = handleCliArgs(['--yolo']);
 check(yolo.kind === 'start' && yolo.permissionMode === 'full', '--yolo means Full Access');

@@ -17,6 +17,7 @@ import { isPermissionMode, type PermissionMode } from '@/permissions';
 
 export type StartCliResult = {
   kind: 'start';
+  prompt?: string;
   resumeId?: string;
   resumePicker?: boolean;
   model?: string;
@@ -60,7 +61,7 @@ function printHelp() {
     '',
     'Your best work is yet to come.',
     '',
-    `${chalk.bold('Usage:')} ${chalk.white(`${COMMAND_NAME} [options]`)}`,
+    `${chalk.bold('Usage:')} ${chalk.white(`${COMMAND_NAME} [options] [prompt]`)}`,
     '',
     chalk.bold('Options:'),
     '',
@@ -131,10 +132,15 @@ export function handleCliArgs(argv = process.argv.slice(2)): CliResult {
   }
 
   const result: StartCliResult = { kind: 'start' };
+  const promptParts: string[] = [];
 
   try {
     for (let index = 0; index < argv.length; index += 1) {
       const arg = argv[index];
+      if (arg === '--') {
+        promptParts.push(...argv.slice(index + 1));
+        break;
+      }
       if (arg === '--resume') {
         const next = argv[index + 1];
         if (!next || next.startsWith('-')) result.resumePicker = true;
@@ -175,8 +181,12 @@ export function handleCliArgs(argv = process.argv.slice(2)): CliResult {
         result.permissionMode = 'full';
         continue;
       }
-      throw new Error(`Invalid argument '${arg}'.`);
+      if (arg.startsWith('-')) throw new Error(`Invalid argument '${arg}'.`);
+      promptParts.push(arg);
     }
+
+    const prompt = promptParts.join(' ').trim();
+    if (prompt) result.prompt = prompt;
 
     if (result.thinkingMode) {
       const selectedModel = result.model ?? DEFAULT_MODEL;

@@ -115,6 +115,7 @@ function estimateMessageTokens(messages: AgentMessage[]) {
 
 export type AgentAppOptions = {
   initialState?: AgentState;
+  initialPrompt?: string;
   sessionId?: string;
   threadTitle?: string;
   rolloutPath?: string;
@@ -185,6 +186,7 @@ export class AgentApp {
   private readonly modelOverride?: string;
   private readonly thinkingModeOverride?: AgentState['thinkingMode'];
   private readonly permissionModeOverride?: PermissionMode;
+  private readonly initialPrompt?: string;
   private lastRequestId: string | null = null;
   private threadTitle: string | null;
   private threadTitleRequest: BackgroundThreadTitleRequest | null = null;
@@ -419,6 +421,7 @@ export class AgentApp {
     this.modelOverride = options.model;
     this.thinkingModeOverride = options.thinkingMode;
     this.permissionModeOverride = options.permissionMode;
+    this.initialPrompt = options.initialPrompt?.trim() || undefined;
     this.threadTitle = options.threadTitle?.trim() ? options.threadTitle.trim() : null;
     this.sessionRolloutPath = options.rolloutPath;
     this.sessionCreatedAt = options.sessionCreatedAt;
@@ -488,6 +491,7 @@ export class AgentApp {
 
     this.render();
     for (const chunk of buffer) this.onStdinData(chunk);
+    if (this.initialPrompt) this.startSubmissionTask(this.initialPrompt);
   }
 
   private prepareShutdown() {

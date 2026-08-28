@@ -44,6 +44,7 @@ const { AgentApp } = await import('@/agent/app');
 
 const app = new AgentApp({
   initialState,
+  initialPrompt: cli.prompt,
   sessionId: resumeSession?.sessionId,
   threadTitle: resumeSession?.name,
   rolloutPath: resumeSession?.rolloutPath,
