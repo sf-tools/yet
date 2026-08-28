@@ -284,7 +284,7 @@ export function commandActivityIsRunning(entries: ToolHistoryEntry[]) {
 export function renderCommandActivity(
   entries: ToolHistoryEntry[],
   ctx: RenderContext,
-  options: { transcript?: boolean } = {},
+  options: { transcript?: boolean; showCommandSummaries?: boolean } = {},
 ): Block {
   const execEntries = entries.filter(entry => entry.toolName !== 'write_stdin');
   const writes = entries.filter(entry => entry.toolName === 'write_stdin');
@@ -340,7 +340,7 @@ export function renderCommandActivity(
   const failed = commands.filter(command => command.failed);
   const block: Block = [];
 
-  const exploration = commands.length > 0 && writes.length === 0 && commands.every(command =>
+  const exploration = !options.showCommandSummaries && commands.length > 0 && writes.length === 0 && commands.every(command =>
     command.parsed && !command.failed,
   );
   if (exploration) {
@@ -353,7 +353,12 @@ export function renderCommandActivity(
     );
   }
 
-  if (completed.length === 1 && commands.length === 1 && writes.length === 0) {
+  if (options.showCommandSummaries) {
+    completed.forEach((command, index) => {
+      if (index > 0) block.push(blankLine());
+      block.push(...compactCommand('Ran', command.command, command.result.output, ctx));
+    });
+  } else if (completed.length === 1 && commands.length === 1 && writes.length === 0) {
     const command = completed[0];
     block.push(...compactCommand('Ran', command.command, command.result.output, ctx));
   } else if (completed.length > 0) {

@@ -259,6 +259,11 @@ function buildAgentStore(initialState: AgentState) {
       return state;
     },
 
+    setShowCommandSummaries(showCommandSummaries: boolean) {
+      state.showCommandSummaries = showCommandSummaries;
+      return state;
+    },
+
     setCompacting(compacting: boolean) {
       state.compacting = compacting;
       return state;

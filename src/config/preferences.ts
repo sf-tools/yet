@@ -19,6 +19,7 @@ export type YetPreferences = {
   permissions: PermissionMode;
   autoCompactEnabled: boolean;
   showThinking: boolean;
+  showCommandSummaries: boolean;
 };
 
 export const YET_PREFERENCES_PATH = join(homedir(), '.yet', 'preferences.json');
@@ -31,6 +32,7 @@ export function defaultYetPreferences(): YetPreferences {
     permissions: 'ask',
     autoCompactEnabled: true,
     showThinking: false,
+    showCommandSummaries: false,
   };
 }
 
@@ -62,6 +64,10 @@ export function normalizeYetPreferences(value: unknown): YetPreferences {
       typeof candidate.showThinking === 'boolean'
         ? candidate.showThinking
         : defaults.showThinking,
+    showCommandSummaries:
+      typeof candidate.showCommandSummaries === 'boolean'
+        ? candidate.showCommandSummaries
+        : defaults.showCommandSummaries,
   };
 }
 

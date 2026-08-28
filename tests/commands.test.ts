@@ -1,7 +1,14 @@
 import { AgentApp } from '@/agent/app';
 import { getLastAssistantResponse } from '@/agent/messages';
 import { createSideConversationState, SIDE_BOUNDARY_PROMPT, SIDE_DEVELOPER_INSTRUCTIONS } from '@/agent/side-conversation';
-import { builtinSlashCommands, createSlashCommandRegistry, type SlashCommandContext } from '@/agent/slash-commands';
+import {
+  builtinSlashCommands,
+  createSlashCommandRegistry,
+  formatLoopInterval,
+  parseLoopInput,
+  type ActiveLoopSummary,
+  type SlashCommandContext,
+} from '@/agent/slash-commands';
 import { normalizeYetPreferences } from '@/config';
 import { applyConfigPickerState, createConfigPickerState } from '@/agent/config-settings';
 import { formatGoalElapsedSeconds } from '@/agent/goals';
@@ -20,7 +27,7 @@ import { check, deepEqual, equal } from './harness';
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'compact', 'copy', 'ps', 'stop', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
+  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'loop', 'compact', 'copy', 'ps', 'stop', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
@@ -74,6 +81,83 @@ goalEntries.length = 0;
 await goalCommand.execute(goalContext, { raw: '/goal', invocation: 'goal', argsText: '', argv: [] });
 check(goalEntries[0]?.type === 'goal_summary', 'bare /goal renders the persisted goal summary');
 equal(formatGoalElapsedSeconds(5_400), '1h 30m', 'goal time uses the Codex compact format');
+
+deepEqual(
+  parseLoopInput('5m /status'),
+  { prompt: '/status', intervalMs: 300_000 },
+  '/loop parses a leading compact interval and slash command',
+);
+deepEqual(
+  parseLoopInput('check the deployment every 2 hours'),
+  { prompt: 'check the deployment', intervalMs: 7_200_000 },
+  '/loop parses a natural trailing interval',
+);
+deepEqual(
+  parseLoopInput('watch the build'),
+  { prompt: 'watch the build', intervalMs: null },
+  '/loop without an interval uses model-paced execution',
+);
+equal(formatLoopInterval(7_200_000), '2h', 'loop intervals use their largest exact unit');
+const loopCommand = builtinSlashCommands.find(command => command.name === 'loop');
+check(loopCommand !== undefined, '/loop is registered');
+let activeLoop: ActiveLoopSummary | null = null;
+let loopReplaced = false;
+const loopEntries: HistoryEntry[] = [];
+const loopContext = {
+  startLoop: (prompt: string, intervalMs: number | null) => {
+    loopReplaced = activeLoop !== null;
+    activeLoop = { prompt, intervalMs, nextRunAt: null };
+    return { replaced: loopReplaced };
+  },
+  stopLoop: () => {
+    const stopped = activeLoop !== null;
+    activeLoop = null;
+    return stopped;
+  },
+  getActiveLoop: () => activeLoop,
+  persistEntries: (entries: HistoryEntry[]) => loopEntries.push(...entries),
+} as unknown as SlashCommandContext;
+await loopCommand.execute(loopContext, {
+  raw: '/loop 5m /status',
+  invocation: 'loop',
+  argsText: '5m /status',
+  argv: ['5m', '/status'],
+});
+deepEqual(activeLoop, { prompt: '/status', intervalMs: 300_000, nextRunAt: null }, '/loop starts the requested recurring command');
+await loopCommand.execute(loopContext, {
+  raw: '/loop stop',
+  invocation: 'loop',
+  argsText: 'stop',
+  argv: ['stop'],
+});
+equal(activeLoop, null, '/loop stop ends the active loop');
+check(loopEntries.length === 2, '/loop start and stop both render a durable status cell');
+
+const loopRuntimeApp = new AgentApp({ initialState: createAgentStore().getState() });
+const loopRuntime = loopRuntimeApp as unknown as {
+  store: ReturnType<typeof createAgentStore>;
+  render(): void;
+  drainingQueuedSubmissions: boolean;
+  activeLoopTurnGeneration: number | null;
+  startLoop(prompt: string, intervalMs: number | null): { replaced: boolean };
+  scheduleLoopWakeup(request: { delaySeconds: number; reason: string }): {
+    stopped: boolean;
+    scheduledFor: number | null;
+    delaySeconds: number | null;
+  };
+  stopLoop(): boolean;
+};
+loopRuntime.render = () => {};
+loopRuntime.drainingQueuedSubmissions = true;
+loopRuntime.startLoop('check the build', null);
+const queuedLoop = loopRuntime.store.getState().queuedSubmissions[0];
+check(typeof queuedLoop?.loopGeneration === 'number', 'starting /loop queues its first iteration immediately');
+loopRuntime.activeLoopTurnGeneration = queuedLoop!.loopGeneration!;
+const pacedWakeup = loopRuntime.scheduleLoopWakeup({ delaySeconds: 1, reason: 'Retry soon.' });
+equal(pacedWakeup.delaySeconds, 60, 'model-paced loops clamp wakeups to the safe minimum');
+check(pacedWakeup.scheduledFor !== null, 'model-paced loops arm their next wakeup');
+check(loopRuntime.stopLoop(), 'runtime loops can be stopped');
+equal(loopRuntime.store.getState().queuedSubmissions.length, 0, 'stopping a loop removes its queued iterations');
 
 const separatorContext = createRenderContext(createTheme(), true, 80, 20);
 const shortSeparator = serializeBlock(
@@ -135,22 +219,31 @@ const configStore = createAgentStore();
 const configPicker = createConfigPickerState(configStore.getState());
 equal(configPicker.items[0]?.enabled, false, 'configuration picker shows the current thinking value');
 equal(configPicker.items[1]?.enabled, true, 'configuration picker shows the current compaction value');
+equal(configPicker.items[2]?.enabled, false, 'configuration picker disables command summaries by default');
 const renderedConfig = serializeBlock(
   renderConfigPicker(configPicker, createRenderContext(createTheme(), false, 80, 30)),
 ).join('\n');
 configPicker.items[0]!.enabled = true;
 configPicker.items[1]!.enabled = false;
+configPicker.items[2]!.enabled = true;
 check(applyConfigPickerState(configStore, configPicker), 'configuration changes are applied');
 equal(configStore.getState().showThinking, true, 'configuration updates thinking visibility');
 equal(configStore.getState().autoCompactEnabled, false, 'configuration updates automatic compaction');
+equal(configStore.getState().showCommandSummaries, true, 'configuration updates command summary visibility');
 equal(
   normalizeYetPreferences({ showThinking: false }).showThinking,
   false,
   'thinking visibility is retained by preference normalization',
 );
+equal(
+  normalizeYetPreferences({ showCommandSummaries: true }).showCommandSummaries,
+  true,
+  'command summary visibility is retained by preference normalization',
+);
 check(
   renderedConfig.includes('Configuration') &&
     renderedConfig.includes('[ ] Show thinking') &&
+    renderedConfig.includes('[ ] Show command summaries') &&
     renderedConfig.includes('Press space to select or enter to save'),
   'configuration picker uses the experimental-features list style',
 );

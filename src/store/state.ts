@@ -43,6 +43,7 @@ export const createInitialState = (): AgentState => ({
   autoCompactEnabled: true,
   planningMode: false,
   showThinking: false,
+  showCommandSummaries: false,
   compacting: false,
   sideConversation: null,
   goal: null,

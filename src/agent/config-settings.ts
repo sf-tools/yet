@@ -24,6 +24,13 @@ export const CONFIG_SETTINGS: readonly ConfigSetting[] = [
     read: state => state.autoCompactEnabled,
     write: (store, enabled) => store.setAutoCompactEnabled(enabled),
   },
+  {
+    id: 'command-summaries',
+    label: 'Show command summaries',
+    detail: 'Show each command summary in chat instead of one collapsed command count.',
+    read: state => state.showCommandSummaries,
+    write: (store, enabled) => store.setShowCommandSummaries(enabled),
+  },
 ];
 
 export function createConfigPickerState(state: AgentState): ConfigPickerState {

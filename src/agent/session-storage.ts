@@ -39,6 +39,7 @@ export type PersistedSessionState = {
   autoCompactEnabled: boolean;
   planningMode: boolean;
   showThinking: boolean;
+  showCommandSummaries?: boolean;
   goal?: AgentState['goal'];
 };
 
@@ -85,6 +86,7 @@ type TurnContextPayload = {
   autoCompactEnabled: boolean;
   planningMode: boolean;
   showThinking: boolean;
+  showCommandSummaries?: boolean;
   goal?: AgentState['goal'];
 };
 
@@ -193,6 +195,7 @@ export function persistedStateFromAgentState(
     autoCompactEnabled: state.autoCompactEnabled,
     planningMode: state.planningMode,
     showThinking: state.showThinking,
+    showCommandSummaries: state.showCommandSummaries,
     goal: state.goal ? cloneJson(state.goal) : null,
   };
 }
@@ -260,6 +263,7 @@ export function hydratePersistedState(persisted: PersistedSessionState): AgentSt
     planningMode: persisted.planningMode,
     permissionMode: persisted.permissionMode ?? initial.permissionMode,
     showThinking: persisted.showThinking ?? initial.showThinking,
+    showCommandSummaries: persisted.showCommandSummaries ?? initial.showCommandSummaries,
     goal: persisted.goal ? cloneJson(persisted.goal) : null,
     thinkingMode: persisted.thinkingMode,
     sessionUsage: cloneJson(persisted.sessionUsage ?? EMPTY_USAGE),
@@ -317,6 +321,7 @@ function applyEvent(state: AgentState, event: YetSessionEvent) {
       state.autoCompactEnabled = event.payload.autoCompactEnabled;
       state.planningMode = event.payload.planningMode;
       state.showThinking = event.payload.showThinking;
+      state.showCommandSummaries = event.payload.showCommandSummaries ?? false;
       state.goal = event.payload.goal ? cloneJson(event.payload.goal) : null;
       break;
     case 'user_message':
@@ -890,6 +895,7 @@ export function createTurnContextEvent(
       autoCompactEnabled: state.autoCompactEnabled,
       planningMode: state.planningMode,
       showThinking: state.showThinking,
+      showCommandSummaries: state.showCommandSummaries,
       goal: state.goal ? cloneJson(state.goal) : null,
     },
   };

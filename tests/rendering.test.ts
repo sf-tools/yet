@@ -189,34 +189,54 @@ equal(
   ' • Ran 2 commands · ctrl + t to view transcript',
   'completed command groups collapse to the Codex transcript summary',
 );
+const expandedCommandSummaries = serializeBlock(renderCommandActivity(
+  commandHistory,
+  renderContext,
+  { showCommandSummaries: true },
+)).join('\n');
+check(
+  expandedCommandSummaries.includes('• Ran printf first') &&
+    expandedCommandSummaries.includes('• Ran printf second') &&
+    !expandedCommandSummaries.includes('Ran 2 commands'),
+  'command summary mode renders each completed command instead of the collapsed count',
+);
+const explorationHistory = [
+  {
+    type: 'tool' as const,
+    toolCallId: 'search-1',
+    toolName: 'exec_command',
+    input: { cmd: "rg -n 'update_plan' src" },
+    output: JSON.stringify({ output: 'src/tools/index.ts:1', exit_code: 0 }),
+    status: 'completed' as const,
+  },
+  {
+    type: 'tool' as const,
+    toolCallId: 'read-1',
+    toolName: 'exec_command',
+    input: { cmd: "sed -n '1,120p' src/tools/index.ts" },
+    output: JSON.stringify({ output: 'source', exit_code: 0 }),
+    status: 'completed' as const,
+  },
+];
 const renderedExploration = serializeBlock(
-  renderCommandActivity(
-    [
-      {
-        type: 'tool',
-        toolCallId: 'search-1',
-        toolName: 'exec_command',
-        input: { cmd: "rg -n 'update_plan' src" },
-        output: JSON.stringify({ output: 'src/tools/index.ts:1', exit_code: 0 }),
-        status: 'completed',
-      },
-      {
-        type: 'tool',
-        toolCallId: 'read-1',
-        toolName: 'exec_command',
-        input: { cmd: "sed -n '1,120p' src/tools/index.ts" },
-        output: JSON.stringify({ output: 'source', exit_code: 0 }),
-        status: 'completed',
-      },
-    ],
-    renderContext,
-  ),
+  renderCommandActivity(explorationHistory, renderContext),
 ).join('\n');
 check(
   renderedExploration.includes('• Explored') &&
     renderedExploration.includes('Search update_plan in src') &&
     renderedExploration.includes('Read src/tools/index.ts'),
   'read and search commands collapse into the Codex Explored cell',
+);
+const expandedExploration = serializeBlock(renderCommandActivity(
+  explorationHistory,
+  renderContext,
+  { showCommandSummaries: true },
+)).join('\n');
+check(
+  expandedExploration.includes("• Ran rg -n 'update_plan' src") &&
+    expandedExploration.includes("• Ran sed -n '1,120p' src/tools/index.ts") &&
+    !expandedExploration.includes('• Explored'),
+  'command summary mode expands read and search commands too',
 );
 const renderedSingleCommand = serializeBlock(
   renderCommandActivity(

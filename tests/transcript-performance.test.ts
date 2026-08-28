@@ -1,9 +1,14 @@
-import { renderTranscriptViewportParts } from '../src/render/components/transcript-overlay';
+import {
+  renderTranscriptDocument,
+  renderTranscriptViewportParts,
+} from '../src/render/components/transcript-overlay';
 import { createRenderContext, serializeBlock } from '../src/render';
 import { line, span } from '../src/render/primitives';
 import { createTheme } from '../src/theme';
 import { widthOf } from '../src/text';
 import { renderCommandActivity } from '../src/render/components/tools/command-activity';
+import { TranscriptHistoryLoader } from '../src/agent/transcript-history-loader';
+import { EntryKind } from '../src/types';
 import { check, equal } from './harness';
 
 const context = createRenderContext(createTheme(), true, 100, 40);
@@ -41,4 +46,29 @@ check(
 check(
   commandTranscript.join('').includes(longOutput.slice(-40)),
   'wrapping transcript output preserves the complete command result',
+);
+
+const incrementalEntries = Array.from({ length: 96 }, (_, index) => ({
+  type: 'entry' as const,
+  kind: EntryKind.Assistant,
+  text: `message ${index}`,
+}));
+const incremental = new TranscriptHistoryLoader(incrementalEntries, context);
+incremental.loadMore(4);
+equal(incremental.loadedEntryCount, 4, 'transcript loading renders only the newest initial chunk');
+const initialChunk = serializeBlock(incremental.contentParts().flat()).join('\n');
+check(initialChunk.includes('message 95'), 'initial transcript chunk is immediately useful at the tail');
+check(!initialChunk.includes('message 0'), 'initial transcript chunk defers old history rendering');
+incremental.loadMore(8);
+equal(incremental.loadedEntryCount, 12, 'transcript history grows in bounded background chunks');
+while (incremental.loadMore(16)) {}
+check(incremental.done, 'incremental transcript loading eventually completes');
+equal(
+  serializeBlock(incremental.contentParts().flat()).join('\n'),
+  serializeBlock(renderTranscriptDocument(
+    incrementalEntries,
+    { reasoning: '', assistant: '' },
+    context,
+  ).block).join('\n'),
+  'chunked transcript history preserves the full rendered document',
 );

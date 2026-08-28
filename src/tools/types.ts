@@ -31,6 +31,20 @@ export type ToolAuthorization = {
   potentiallyUnsafe?: boolean;
 };
 
+export type ScheduleLoopWakeupRequest =
+  | { stop: true }
+  | {
+      stop?: false;
+      delaySeconds: number;
+      reason: string;
+    };
+
+export type ScheduleLoopWakeupResult = {
+  stopped: boolean;
+  scheduledFor: number | null;
+  delaySeconds: number | null;
+};
+
 export type ToolFactoryOptions = {
   workspaceRoot: string;
   getPermissionMode: () => PermissionMode;
@@ -50,6 +64,10 @@ export type ToolFactoryOptions = {
   getGoal: () => ThreadGoal | null;
   createGoal: (objective: string, tokenBudget?: number) => ThreadGoal;
   updateGoal: (status: 'complete' | 'blocked') => ThreadGoal;
+  getLoopPacingActive?: () => boolean;
+  scheduleLoopWakeup?: (
+    request: ScheduleLoopWakeupRequest,
+  ) => ScheduleLoopWakeupResult;
 };
 
 export function asObject(value: unknown, toolName: string): Record<string, unknown> {

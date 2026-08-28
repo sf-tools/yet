@@ -1,5 +1,9 @@
 import { createTheme } from '@/theme';
-import { createToolRegistry } from '@/tools';
+import {
+  createToolRegistry,
+  type ScheduleLoopWakeupRequest,
+  type ScheduleLoopWakeupResult,
+} from '@/tools';
 import { runUserShell } from './shell';
 import { BackgroundTerminalManager } from './background-terminals';
 import { randomUUID } from 'node:crypto';
@@ -43,6 +47,8 @@ import {
   currentSlashCommandQuery,
   type ResumeSessionScope,
   type ResolvedSlashCommand,
+  type ActiveLoopSummary,
+  type StartLoopResult,
   type SlashCommandContext,
 } from './slash-commands';
 import {
@@ -61,6 +67,7 @@ import {
   SIDE_DEVELOPER_INSTRUCTIONS,
 } from './side-conversation';
 import { applyConfigPickerState, createConfigPickerState } from './config-settings';
+import { TranscriptHistoryLoader } from './transcript-history-loader';
 import { createProvisionalThreadTitle, startBackgroundThreadTitle, type BackgroundThreadTitleRequest } from './thread-title';
 import { normalizePtyOutput, plain, installSegmentContainingPolyfill } from '@/text';
 import { handleAbortKeypress, createAbortController, resetAbortState } from './abort';
@@ -125,6 +132,11 @@ const BRACKETED_PASTE_END = '\u001b[201~';
 const TRANSCRIPT_SCREEN_ENTER = '\u001b[?1049h\u001b[?1007h';
 const TRANSCRIPT_SCREEN_LEAVE = '\u001b[?1007l\u001b[?1049l';
 const BACKTRACK_FOOTER_HINT = 'esc again to edit previous message';
+const TRANSCRIPT_INITIAL_HISTORY_ENTRIES = 8;
+const TRANSCRIPT_BACKGROUND_HISTORY_ENTRIES = 8;
+const TRANSCRIPT_HISTORY_CHUNK_DELAY_MS = 16;
+const MIN_SELF_PACED_LOOP_DELAY_SECONDS = 60;
+const MAX_SELF_PACED_LOOP_DELAY_SECONDS = 3_600;
 
 function bracketedPasteSuffixLength(text: string) {
   const maxLength = Math.min(text.length, BRACKETED_PASTE_START.length - 1);
@@ -204,6 +216,11 @@ type SideConversationRuntime = {
   closeRequested: boolean;
 };
 
+type ActiveLoopRuntime = ActiveLoopSummary & {
+  generation: number;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+
 export class AgentApp {
   private readonly store: AgentStore;
   private readonly theme = createTheme();
@@ -223,7 +240,7 @@ export class AgentApp {
     historyRevision: number;
     width: number;
     highlightHistoryIndex: number | null;
-    document: ReturnType<typeof renderTranscriptDocument>;
+    loader: TranscriptHistoryLoader;
   } | null = null;
   private transcriptLiveCache: {
     width: number;
@@ -237,6 +254,7 @@ export class AgentApp {
     committedHistoryCount: number;
     width: number;
     showThinking: boolean;
+    showCommandSummaries: boolean;
     block: Block;
   } | null = null;
   private backgroundWaitToolCallId: string | null = null;
@@ -262,6 +280,11 @@ export class AgentApp {
     getGoal: () => this.state.goal,
     createGoal: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
     updateGoal: status => this.updateGoalFromTool(status),
+    getLoopPacingActive: () =>
+      this.activeLoopTurnGeneration !== null &&
+      this.activeLoop?.generation === this.activeLoopTurnGeneration &&
+      this.activeLoop.intervalMs === null,
+    scheduleLoopWakeup: request => this.scheduleLoopWakeup(request),
   });
   private readonly slashCommands = createSlashCommandRegistry(builtinSlashCommands, {
     getSessionId: () => this.sessionId,
@@ -289,8 +312,12 @@ export class AgentApp {
   private sessionForkPoint?: number;
   private sideConversation: SideConversationRuntime | null = null;
   private drainingQueuedSubmissions = false;
+  private loopGeneration = 0;
+  private activeLoop: ActiveLoopRuntime | null = null;
+  private activeLoopTurnGeneration: number | null = null;
   private activeSubmissionTask: Promise<void> | null = null;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
+  private transcriptHistoryLoadTimer: ReturnType<typeof setTimeout> | null = null;
   private footerNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   private renderScheduled = false;
   private lastRenderAt = 0;
@@ -406,7 +433,9 @@ export class AgentApp {
         const commands = this.state.historyEntries.slice(index, end) as ToolHistoryEntry[];
         if (commandActivityIsRunning(commands)) break;
         if (this.state.busy && end === this.state.historyEntries.length) break;
-        appendCell(serializeBlock(renderCommandActivity(commands, ctx)));
+        appendCell(serializeBlock(renderCommandActivity(commands, ctx, {
+          showCommandSummaries: this.state.showCommandSummaries,
+        })));
         this.committedHistoryCount = end;
         continue;
       }
@@ -431,7 +460,8 @@ export class AgentApp {
       cached?.historyRevision === historyRevision &&
       cached.committedHistoryCount === this.committedHistoryCount &&
       cached.width === ctx.width &&
-      cached.showThinking === this.state.showThinking
+      cached.showThinking === this.state.showThinking &&
+      cached.showCommandSummaries === this.state.showCommandSummaries
     ) {
       return cached.block;
     }
@@ -450,7 +480,9 @@ export class AgentApp {
         const end = commandActivityEnd(this.state.historyEntries, index);
         appendCell(
           renderCommandActivity(
-            this.state.historyEntries.slice(index, end) as ToolHistoryEntry[], ctx,
+            this.state.historyEntries.slice(index, end) as ToolHistoryEntry[],
+            ctx,
+            { showCommandSummaries: this.state.showCommandSummaries },
           ),
         );
         index = end;
@@ -472,6 +504,7 @@ export class AgentApp {
         committedHistoryCount: this.committedHistoryCount,
         width: ctx.width,
         showThinking: this.state.showThinking,
+        showCommandSummaries: this.state.showCommandSummaries,
         block: pendingHistory,
       };
     } else {
@@ -607,7 +640,10 @@ export class AgentApp {
   }
 
   async start() {
-    await this.theme.sync();
+    const themeReady = this.theme.sync();
+    const preferencesReady = this.bootFromSnapshot
+      ? Promise.resolve(null)
+      : loadYetPreferences();
     const mentionIndex = startMentionIndex(process.cwd());
     void mentionIndex.waitForReady().then(() => {
       if (this.state.closed || !this.headerPrinted) return;
@@ -615,24 +651,7 @@ export class AgentApp {
       this.scheduleRender();
     });
     this.skills = discoverSkills();
-
-    if (!this.bootFromSnapshot) {
-      const preferences = await loadYetPreferences();
-      this.store.setCurrentModel(preferences.model);
-      this.store.setThinkingMode(preferences.reasoning);
-      this.store.setFastModeEnabled(preferences.fastModeEnabled);
-      this.store.setPermissionMode(preferences.permissions);
-      this.store.setAutoCompactEnabled(preferences.autoCompactEnabled);
-      this.store.setShowThinking(preferences.showThinking);
-    }
-    if (this.modelOverride) this.store.setCurrentModel(this.modelOverride);
-    if (this.thinkingModeOverride) {
-      if (!getSupportedThinkingModes(this.state.currentModel).includes(this.thinkingModeOverride))
-        throw new Error(`${this.state.currentModel} does not support ${this.thinkingModeOverride} reasoning effort`);
-      this.store.setThinkingMode(this.thinkingModeOverride);
-    }
-    if (this.permissionModeOverride) this.store.setPermissionMode(this.permissionModeOverride);
-    this.sessionRecorder = await SessionRecorder.open({
+    const sessionRecorderReady = SessionRecorder.open({
       sessionId: this.sessionId,
       cwd: process.cwd(),
       rolloutPath: this.sessionRolloutPath,
@@ -641,6 +660,29 @@ export class AgentApp {
       parentSessionId: this.sessionParentId,
       forkPoint: this.sessionForkPoint,
     });
+
+    const [, preferences, sessionRecorder] = await Promise.all([
+      themeReady,
+      preferencesReady,
+      sessionRecorderReady,
+    ]);
+    if (preferences) {
+      this.store.setCurrentModel(preferences.model);
+      this.store.setThinkingMode(preferences.reasoning);
+      this.store.setFastModeEnabled(preferences.fastModeEnabled);
+      this.store.setPermissionMode(preferences.permissions);
+      this.store.setAutoCompactEnabled(preferences.autoCompactEnabled);
+      this.store.setShowThinking(preferences.showThinking);
+      this.store.setShowCommandSummaries(preferences.showCommandSummaries);
+    }
+    if (this.modelOverride) this.store.setCurrentModel(this.modelOverride);
+    if (this.thinkingModeOverride) {
+      if (!getSupportedThinkingModes(this.state.currentModel).includes(this.thinkingModeOverride))
+        throw new Error(`${this.state.currentModel} does not support ${this.thinkingModeOverride} reasoning effort`);
+      this.store.setThinkingMode(this.thinkingModeOverride);
+    }
+    if (this.permissionModeOverride) this.store.setPermissionMode(this.permissionModeOverride);
+    this.sessionRecorder = sessionRecorder;
     this.sessionRolloutPath = this.sessionRecorder.rolloutPath;
 
     const { stream, buffer } = takeOverEarlyStdin();
@@ -667,6 +709,8 @@ export class AgentApp {
 
     clearInterval(this.statusAnimationTimer);
     clearInterval(this.rainbowTimer);
+    this.cancelTranscriptHistoryLoad();
+    this.stopLoop();
     this.backgroundTerminals.stopAll();
     if (this.renderTimer) clearTimeout(this.renderTimer);
     if (this.footerNoticeTimer) clearTimeout(this.footerNoticeTimer);
@@ -795,6 +839,10 @@ export class AgentApp {
   }
 
   private resetRenderedScreen() {
+    this.cancelTranscriptHistoryLoad();
+    this.transcriptHistoryCache = null;
+    this.transcriptLiveCache = null;
+    this.lastTranscriptLines = [];
     this.clearTransientBlock();
     this.committedHistoryCount = 0;
     this.headerPrinted = false;
@@ -813,6 +861,32 @@ export class AgentApp {
       index === 0 ? renderHistoryEntry(entry, ctx) : [blankLine(), ...renderHistoryEntry(entry, ctx)],
     );
     this.appendPermanentLines(serializeBlock(block));
+  }
+
+  private cancelTranscriptHistoryLoad() {
+    if (!this.transcriptHistoryLoadTimer) return;
+    clearTimeout(this.transcriptHistoryLoadTimer);
+    this.transcriptHistoryLoadTimer = null;
+  }
+
+  private scheduleTranscriptHistoryLoad() {
+    const cache = this.transcriptHistoryCache;
+    if (
+      !this.transcriptOpen ||
+      this.transcriptHistoryLoadTimer ||
+      !cache ||
+      cache.loader.done
+    ) return;
+
+    this.transcriptHistoryLoadTimer = setTimeout(() => {
+      this.transcriptHistoryLoadTimer = null;
+      if (!this.transcriptOpen || this.transcriptHistoryCache !== cache) return;
+      if (cache.loader.loadMore(TRANSCRIPT_BACKGROUND_HISTORY_ENTRIES)) {
+        this.scheduleRender();
+      }
+      this.scheduleTranscriptHistoryLoad();
+    }, TRANSCRIPT_HISTORY_CHUNK_DELAY_MS);
+    this.transcriptHistoryLoadTimer.unref?.();
   }
 
   private performRender = () => {
@@ -834,21 +908,26 @@ export class AgentApp {
       if (
         !cached ||
         cached.historyRevision !== historyRevision ||
-        cached.width !== columns ||
-        cached.highlightHistoryIndex !== this.backtrackHistoryIndex
+        cached.width !== columns
       ) {
+        this.cancelTranscriptHistoryLoad();
+        const loader = new TranscriptHistoryLoader(
+          this.state.historyEntries,
+          ctx,
+          this.backtrackHistoryIndex,
+        );
+        loader.loadMore(TRANSCRIPT_INITIAL_HISTORY_ENTRIES);
         this.transcriptHistoryCache = {
           historyRevision,
           width: columns,
           highlightHistoryIndex: this.backtrackHistoryIndex,
-          document: renderTranscriptDocument(
-            this.state.historyEntries,
-            { reasoning: '', assistant: '' },
-            ctx,
-            { highlightHistoryIndex: this.backtrackHistoryIndex },
-          ),
+          loader,
         };
+      } else if (cached.highlightHistoryIndex !== this.backtrackHistoryIndex) {
+        cached.loader.setHighlightHistoryIndex(this.backtrackHistoryIndex);
+        cached.highlightHistoryIndex = this.backtrackHistoryIndex;
       }
+      this.scheduleTranscriptHistoryLoad();
       const liveCached = this.transcriptLiveCache;
       if (
         !liveCached ||
@@ -863,24 +942,27 @@ export class AgentApp {
           block: renderTranscriptDocument([], { reasoning, assistant }, ctx).block,
         };
       }
-      const historyBlock = this.transcriptHistoryCache?.document.block ?? [];
+      const historyParts = this.transcriptHistoryCache?.loader.contentParts() ?? [];
       const liveBlock = this.transcriptLiveCache?.block ?? [];
-      const contentParts: Block[] = historyBlock.length > 0 && liveBlock.length > 0
-        ? [historyBlock, [blankLine()], liveBlock]
-        : [historyBlock, liveBlock];
+      const contentParts: Block[] = [
+        ...historyParts,
+        ...(historyParts.length > 0 && liveBlock.length > 0 ? [[blankLine()]] : []),
+        ...(liveBlock.length > 0 ? [liveBlock] : []),
+      ];
       const contentLength = contentParts.reduce((total, part) => total + part.length, 0);
       if (this.backtrackScrollPending && this.backtrackHistoryIndex !== null) {
         const contentHeight = Math.max(1, rows - 4);
         const maxScroll = Math.max(0, contentLength - contentHeight);
-        const range = this.transcriptHistoryCache?.document.entryRanges.get(this.backtrackHistoryIndex);
+        const loader = this.transcriptHistoryCache?.loader;
+        const range = loader?.entryRange(this.backtrackHistoryIndex);
         if (range) {
           const desiredStart = Math.max(
             0,
             Math.min(maxScroll, range.start - Math.floor(Math.max(0, contentHeight - (range.end - range.start)) / 2)),
           );
           this.transcriptScrollOffset = maxScroll - desiredStart;
-        }
-        this.backtrackScrollPending = false;
+          this.backtrackScrollPending = false;
+        } else if (loader?.done) this.backtrackScrollPending = false;
       }
       const rendered = renderTranscriptViewportParts(
         contentParts,
@@ -1097,6 +1179,7 @@ export class AgentApp {
       throw error;
     }
 
+    this.stopLoop();
     this.sessionRecorder = nextRecorder;
     this.sessionId = session.sessionId;
     this.sessionRolloutPath = session.rolloutPath;
@@ -1125,6 +1208,7 @@ export class AgentApp {
     if (this.state.abortController)
       throw new Error("'/fork' is unavailable while a task is running.");
 
+    this.stopLoop();
     await this.sessionRecorder.flush();
     const parentSessionId = this.sessionId;
     const parentTitle = this.threadTitle;
@@ -1307,6 +1391,7 @@ export class AgentApp {
     if (this.state.abortController)
       throw new Error("'/btw' is unavailable while a task is running.");
 
+    this.stopLoop();
     await this.sessionRecorder?.flush();
     const parentSessionId = this.sessionId;
     const parentTitle = this.threadTitle;
@@ -1464,6 +1549,7 @@ export class AgentApp {
         permissions: this.state.permissionMode,
         autoCompactEnabled: this.state.autoCompactEnabled,
         showThinking: this.state.showThinking,
+        showCommandSummaries: this.state.showCommandSummaries,
       });
     } catch (error) {
       this.showFooterNotice(
@@ -1648,10 +1734,30 @@ export class AgentApp {
         ].join('\n')
       : '';
     const skillsPrompt = renderSkillsCatalog(this.skills);
+    const activeLoop = this.activeLoopTurnGeneration === this.activeLoop?.generation
+      ? this.activeLoop
+      : null;
+    const loopPrompt = activeLoop
+      ? activeLoop.intervalMs === null
+        ? [
+            '<recurring-loop pacing="model">',
+            `This is an iteration of the recurring prompt: ${JSON.stringify(activeLoop.prompt)}.`,
+            'Before ending the turn, call schedule_loop once with either a suitable delay and reason, or stop=true when no further iteration is useful.',
+            'Do not busy-wait or sleep inside the turn.',
+            '</recurring-loop>',
+          ].join('\n')
+        : [
+            `<recurring-loop pacing="fixed" interval-ms="${activeLoop.intervalMs}">`,
+            `This is an iteration of the recurring prompt: ${JSON.stringify(activeLoop.prompt)}.`,
+            'Complete one iteration only. The runtime schedules the next iteration after this turn finishes.',
+            '</recurring-loop>',
+          ].join('\n')
+      : '';
     const runtimePrompt = [
       permissionPrompt,
       planningModePrompt,
       this.sideConversationActive ? SIDE_DEVELOPER_INSTRUCTIONS : '',
+      loopPrompt,
       skillsPrompt,
     ].filter(Boolean).join('\n\n');
 
@@ -1690,8 +1796,6 @@ export class AgentApp {
     this.clearTransientBlock();
     this.transcriptOpen = true;
     this.transcriptScrollOffset = 0;
-    this.transcriptHistoryCache = null;
-    this.transcriptLiveCache = null;
     this.lastTranscriptLines = [];
     process.stdout.write(TRANSCRIPT_SCREEN_ENTER);
     this.render();
@@ -1731,7 +1835,6 @@ export class AgentApp {
     this.backtrackPrimed = true;
     this.backtrackHistoryIndex = indices.at(-1) ?? null;
     this.backtrackScrollPending = true;
-    this.transcriptHistoryCache = null;
     this.store.setFooterNotice(null);
     this.render();
   }
@@ -1743,7 +1846,6 @@ export class AgentApp {
     const next = Math.max(0, Math.min(indices.length - 1, position + delta));
     this.backtrackHistoryIndex = indices[next] ?? this.backtrackHistoryIndex;
     this.backtrackScrollPending = true;
-    this.transcriptHistoryCache = null;
     this.scheduleRender();
   }
 
@@ -1751,8 +1853,7 @@ export class AgentApp {
     if (!this.transcriptOpen) return;
     this.transcriptOpen = false;
     this.transcriptScrollOffset = 0;
-    this.transcriptHistoryCache = null;
-    this.transcriptLiveCache = null;
+    this.cancelTranscriptHistoryLoad();
     this.lastTranscriptLines = [];
     this.transientLineCount = 0;
     this.lastTransientLines = [];
@@ -2329,6 +2430,122 @@ export class AgentApp {
     }
   }
 
+  private clearLoopTimer(loop: ActiveLoopRuntime | null = this.activeLoop) {
+    if (!loop?.timer) return;
+    clearTimeout(loop.timer);
+    loop.timer = null;
+    loop.nextRunAt = null;
+  }
+
+  private enqueueLoopIteration(generation: number) {
+    const loop = this.activeLoop;
+    if (!loop || loop.generation !== generation || this.state.closed) return false;
+    this.clearLoopTimer(loop);
+    this.store.enqueueSubmission({
+      text: loop.prompt,
+      loopGeneration: generation,
+    });
+    this.render();
+    void this.drainQueuedSubmissions();
+    return true;
+  }
+
+  private armLoopTimer(generation: number, delayMs: number) {
+    const loop = this.activeLoop;
+    if (!loop || loop.generation !== generation || this.state.closed) return false;
+    this.clearLoopTimer(loop);
+    loop.nextRunAt = Date.now() + delayMs;
+    loop.timer = setTimeout(() => {
+      if (this.activeLoop?.generation !== generation) return;
+      loop.timer = null;
+      loop.nextRunAt = null;
+      this.enqueueLoopIteration(generation);
+    }, delayMs);
+    loop.timer.unref?.();
+    this.render();
+    return true;
+  }
+
+  private startLoop(prompt: string, intervalMs: number | null): StartLoopResult {
+    const normalizedPrompt = prompt.trim();
+    if (!normalizedPrompt) throw new Error('loop prompt must not be empty');
+    const replaced = this.activeLoop !== null;
+    this.stopLoop();
+    const generation = ++this.loopGeneration;
+    this.activeLoop = {
+      generation,
+      prompt: normalizedPrompt,
+      intervalMs,
+      nextRunAt: null,
+      timer: null,
+    };
+    this.enqueueLoopIteration(generation);
+    return { replaced };
+  }
+
+  private stopLoop() {
+    const loop = this.activeLoop;
+    if (!loop) return false;
+    this.clearLoopTimer(loop);
+    this.activeLoop = null;
+    if (this.activeLoopTurnGeneration === loop.generation) {
+      this.activeLoopTurnGeneration = null;
+    }
+    this.store.update(state => {
+      state.queuedSubmissions = state.queuedSubmissions.filter(
+        submission => submission.loopGeneration !== loop.generation,
+      );
+    });
+    this.render();
+    return true;
+  }
+
+  private getActiveLoop(): ActiveLoopSummary | null {
+    const loop = this.activeLoop;
+    if (!loop) return null;
+    return {
+      prompt: loop.prompt,
+      intervalMs: loop.intervalMs,
+      nextRunAt: loop.nextRunAt,
+    };
+  }
+
+  private scheduleLoopWakeup(
+    request: ScheduleLoopWakeupRequest,
+  ): ScheduleLoopWakeupResult {
+    const loop = this.activeLoop;
+    if (
+      !loop ||
+      loop.intervalMs !== null ||
+      this.activeLoopTurnGeneration !== loop.generation
+    ) throw new Error('schedule_loop is only available during an active self-paced /loop iteration');
+
+    if ('stop' in request && request.stop) {
+      this.stopLoop();
+      return { stopped: true, scheduledFor: null, delaySeconds: null };
+    }
+
+    const delaySeconds = Math.max(
+      MIN_SELF_PACED_LOOP_DELAY_SECONDS,
+      Math.min(MAX_SELF_PACED_LOOP_DELAY_SECONDS, request.delaySeconds),
+    );
+    this.armLoopTimer(loop.generation, delaySeconds * 1_000);
+    return {
+      stopped: false,
+      scheduledFor: this.activeLoop?.nextRunAt ?? null,
+      delaySeconds,
+    };
+  }
+
+  private finishLoopIteration(generation: number) {
+    if (this.activeLoopTurnGeneration === generation) {
+      this.activeLoopTurnGeneration = null;
+    }
+    const loop = this.activeLoop;
+    if (!loop || loop.generation !== generation || loop.intervalMs === null || loop.timer) return;
+    this.armLoopTimer(generation, loop.intervalMs);
+  }
+
   private async drainQueuedSubmissions() {
     if (this.drainingQueuedSubmissions || this.state.closed) return;
 
@@ -2340,7 +2557,15 @@ export class AgentApp {
         if (!next) break;
 
         this.render();
-        await this.processSubmission(next);
+        const generation = next.loopGeneration;
+        if (generation !== undefined && this.activeLoop?.generation !== generation) continue;
+        this.activeLoopTurnGeneration = generation ?? null;
+        try {
+          await this.processSubmission(next);
+        } finally {
+          if (generation !== undefined) this.finishLoopIteration(generation);
+          else this.activeLoopTurnGeneration = null;
+        }
       }
     } finally {
       this.drainingQueuedSubmissions = false;
@@ -2363,6 +2588,9 @@ export class AgentApp {
       setPlanningMode: enabled => this.setPlanningMode(enabled),
       enqueueSubmission: (text, options) =>
         this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
+      startLoop: (prompt, intervalMs) => this.startLoop(prompt, intervalMs),
+      stopLoop: () => this.stopLoop(),
+      getActiveLoop: () => this.getActiveLoop(),
       openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
       openConfigPicker: () => this.openConfigPicker(),
       openStatusPanel: panel => this.openStatusPanel(panel),
@@ -2502,14 +2730,19 @@ export class AgentApp {
     }
 
     const turnStartedAt = Date.now();
+    const automatedLoopIteration = queuedSubmission.loopGeneration !== undefined;
     const activeGoalCreatedAt = this.state.goal?.status === 'active'
       ? this.state.goal.createdAt
       : null;
     let turnHadWorkActivity = false;
 
-    if (!queuedSubmission.hidden) await this.promptHistory.add(trimmed, process.cwd());
+    if (!queuedSubmission.hidden && !automatedLoopIteration) {
+      await this.promptHistory.add(trimmed, process.cwd());
+    }
     const displayedUserMessage = displayImageTokens(trimmed);
-    if (!queuedSubmission.hidden) this.startThreadTitleGeneration(displayedUserMessage);
+    if (!queuedSubmission.hidden && !automatedLoopIteration) {
+      this.startThreadTitleGeneration(displayedUserMessage);
+    }
     this.recordTurnContext();
     if (!queuedSubmission.hidden) {
       this.persistHistoryEntries([{
@@ -2918,7 +3151,7 @@ export class AgentApp {
     const pending = this.store.takePendingSteers();
     const queued = this.store.takeQueuedSubmissions();
     const restored = [...pending, ...queued]
-      .filter(submission => !submission.hidden)
+      .filter(submission => !submission.hidden && submission.loopGeneration === undefined)
       .map(submission => submission.text)
       .filter(text => text.length > 0)
       .join('\n');

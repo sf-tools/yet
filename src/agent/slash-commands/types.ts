@@ -13,6 +13,14 @@ export type SlashCommandArgs = {
 
 export type ResumeSessionScope = 'current' | 'all';
 
+export type ActiveLoopSummary = {
+  prompt: string;
+  intervalMs: number | null;
+  nextRunAt: number | null;
+};
+
+export type StartLoopResult = { replaced: boolean };
+
 export type SlashCommandContext = {
   store: AgentStore;
   cleanup(code?: number): void;
@@ -27,6 +35,9 @@ export type SlashCommandContext = {
   setPermissionMode(permissionMode: PermissionMode): void;
   setPlanningMode(enabled: boolean): void;
   enqueueSubmission(text: string, options?: { planningMode?: boolean }): void;
+  startLoop(prompt: string, intervalMs: number | null): StartLoopResult;
+  stopLoop(): boolean;
+  getActiveLoop(): ActiveLoopSummary | null;
   openCommandArgumentPicker(commandName: string): void;
   openConfigPicker(): Promise<void>;
   openStatusPanel(panel: StatusPanelState): Promise<void>;

@@ -22,6 +22,7 @@ export type QueuedSubmission = {
   planningMode?: boolean;
   hidden?: boolean;
   goalContinuation?: boolean;
+  loopGeneration?: number;
 };
 
 export type SideConversationState = {
@@ -71,6 +72,7 @@ export type AgentState = {
   autoCompactEnabled: boolean;
   planningMode: boolean;
   showThinking: boolean;
+  showCommandSummaries: boolean;
   compacting: boolean;
   sideConversation: SideConversationState | null;
   goal: ThreadGoal | null;

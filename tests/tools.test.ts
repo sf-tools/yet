@@ -1,5 +1,5 @@
 import { BackgroundTerminalManager } from '@/agent/background-terminals';
-import { createToolRegistry } from '@/tools';
+import { createScheduleLoopTool, createToolRegistry } from '@/tools';
 import { createWorkspaceSandboxProfile, isProtectedWorkspaceMetadataPath, isWithinWorkspace, prepareSandboxCommand } from '@/permissions';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -91,6 +91,32 @@ try {
     registry.list().map(tool => tool.name),
     ['exec_command', 'write_stdin', 'update_plan', 'apply_patch', 'get_goal', 'create_goal', 'update_goal'],
     'default tool list is exact',
+  );
+  let scheduledLoopRequest: unknown = null;
+  const scheduleLoop = createScheduleLoopTool({
+    schedule: request => {
+      scheduledLoopRequest = request;
+      return 'stop' in request && request.stop
+        ? { stopped: true, scheduledFor: null, delaySeconds: null }
+        : { stopped: false, scheduledFor: 123_000, delaySeconds: request.delaySeconds };
+    },
+  });
+  const scheduledLoop = JSON.parse((await scheduleLoop.execute({
+    delay_seconds: 90,
+    reason: 'Wait for the deployment to settle.',
+  })).output) as { scheduled_for?: string; delay_seconds?: number };
+  deepEqual(
+    scheduledLoopRequest,
+    { delaySeconds: 90, reason: 'Wait for the deployment to settle.' },
+    'schedule_loop validates and forwards a model-paced wakeup',
+  );
+  equal(scheduledLoop.delay_seconds, 90, 'schedule_loop reports the accepted delay');
+  await scheduleLoop.execute({ stop: true });
+  deepEqual(scheduledLoopRequest, { stop: true }, 'schedule_loop lets the model stop its recurring loop');
+  await rejects(
+    scheduleLoop.execute({ delay_seconds: 0, reason: 'invalid' }),
+    /positive whole number/,
+    'schedule_loop rejects non-positive delays',
   );
   equal(
     (await registry.execute('update_plan', {
