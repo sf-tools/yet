@@ -15,7 +15,7 @@ import {
   PromptHistoryStore,
   type PromptHistoryEntry,
 } from './prompt-history';
-import { blankLine, vstack } from '@/render/primitives';
+import { blankLine } from '@/render/primitives';
 import { renderFooter } from '@/render/components/footer';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
 import type { ReadStream as TtyReadStream } from 'node:tty';
@@ -67,6 +67,14 @@ import { handleAbortKeypress, createAbortController, resetAbortState } from './a
 import { renderComposer, moveComposerCursorVertical } from '@/render/components/composer';
 import { acceptComposerSuggestion, listComposerSuggestions } from './composer-suggestions';
 import { createAgentStore, type AgentState, type AgentStore, type QueuedSubmission } from '@/store';
+import {
+  clampTransientLines,
+  clearTransientSequence,
+  patchTransientSequence,
+  synchronizedTerminalSequence,
+  takeBlockTail,
+} from './transient-terminal';
+import type { Block } from '@/render/types';
 
 import { attachFromBytes, attachFromPath, extractTokens, findAttachment, IMAGE_TOKEN_PATTERN, type Attachment } from './image-attachments';
 import { displayImageTokens } from './image-tokens';
@@ -224,6 +232,13 @@ export class AgentApp {
     highlightHistoryIndex: number | null;
     document: ReturnType<typeof renderTranscriptDocument>;
   } | null = null;
+  private pendingHistoryRenderCache: {
+    historyRevision: number;
+    committedHistoryCount: number;
+    width: number;
+    showThinking: boolean;
+    block: Block;
+  } | null = null;
   private backgroundWaitToolCallId: string | null = null;
   private readonly sessionFileBaselines = new Map<string, string | null>();
   private readonly backgroundTerminals = new BackgroundTerminalManager(() => this.scheduleRender());
@@ -307,24 +322,21 @@ export class AgentApp {
       return;
     }
 
-    if (this.transientLineCount > 1) process.stdout.write(`\u001b[${this.transientLineCount - 1}F`);
-    else process.stdout.write('\r');
-
-    for (let index = 0; index < this.transientLineCount; index += 1) {
-      process.stdout.write('\u001b[2K\r');
-      if (index < this.transientLineCount - 1) process.stdout.write('\u001b[E');
-    }
-
-    if (this.transientLineCount > 1) process.stdout.write(`\u001b[${this.transientLineCount - 1}F`);
+    process.stdout.write(synchronizedTerminalSequence(clearTransientSequence(this.transientLineCount)));
     this.transientLineCount = 0;
     this.lastTransientLines = [];
   }
 
   private redrawTransientLines(lines: string[]) {
-    this.clearTransientBlock();
-    if (lines.length === 0) return;
+    const clear = process.stdout.isTTY ? clearTransientSequence(this.transientLineCount) : '';
+    if (lines.length === 0) {
+      if (clear) process.stdout.write(synchronizedTerminalSequence(clear));
+      this.transientLineCount = 0;
+      this.lastTransientLines = [];
+      return;
+    }
 
-    process.stdout.write(lines.join('\n'));
+    process.stdout.write(synchronizedTerminalSequence(`${clear}${lines.join('\n')}`));
     this.transientLineCount = lines.length;
     this.lastTransientLines = [...lines];
   }
@@ -335,48 +347,35 @@ export class AgentApp {
       return;
     }
 
-    const changedRows = lines.flatMap((line, index) => (line === this.lastTransientLines[index] ? [] : [index]));
-    if (changedRows.length === 0) return;
-
-    if (this.transientLineCount > 1) process.stdout.write(`\u001b[${this.transientLineCount - 1}F`);
-    else process.stdout.write('\r');
-
-    let currentRow = 0;
-
-    for (const row of changedRows) {
-      const delta = row - currentRow;
-      if (delta > 0) process.stdout.write(`\u001b[${delta}E`);
-      else if (delta < 0) process.stdout.write(`\u001b[${-delta}F`);
-
-      process.stdout.write('\u001b[2K\r');
-      if (lines[row]) process.stdout.write(lines[row]);
-      currentRow = row;
+    const patch = patchTransientSequence(this.lastTransientLines, lines);
+    if (patch === null) {
+      this.redrawTransientLines(lines);
+      return;
     }
-
-    const lastRow = lines.length - 1;
-    const delta = lastRow - currentRow;
-    if (delta > 0) process.stdout.write(`\u001b[${delta}E`);
-    else if (delta < 0) process.stdout.write(`\u001b[${-delta}F`);
-    process.stdout.write('\r');
+    if (!patch) return;
+    process.stdout.write(synchronizedTerminalSequence(patch));
 
     this.lastTransientLines = [...lines];
   }
 
   private drawTransientLines(lines: string[]) {
-    if (sameLines(lines, this.lastTransientLines)) return;
+    const visibleLines = clampTransientLines(lines, process.stdout.rows || 30);
+    if (sameLines(visibleLines, this.lastTransientLines)) return;
 
     if (this.lastTransientLines.length === 0 || this.transientLineCount === 0) {
-      this.redrawTransientLines(lines);
+      this.redrawTransientLines(visibleLines);
       return;
     }
 
-    this.patchTransientLines(lines);
+    this.patchTransientLines(visibleLines);
   }
 
   private appendPermanentLines(lines: string[]) {
     if (lines.length === 0) return;
-    this.clearTransientBlock();
-    process.stdout.write(`${lines.join('\n')}\n`);
+    const clear = process.stdout.isTTY ? clearTransientSequence(this.transientLineCount) : '';
+    process.stdout.write(synchronizedTerminalSequence(`${clear}${lines.join('\n')}\n`));
+    this.transientLineCount = 0;
+    this.lastTransientLines = [];
   }
 
   private getAnimatedAssistantIndex() {
@@ -432,9 +431,20 @@ export class AgentApp {
     this.appendPermanentLines(lines);
   }
 
-  private renderTransientLines(ctx: ReturnType<typeof createRenderContext>, suggestions: ReturnType<AgentApp['normalizeSuggestions']>) {
-    const animatedAssistantIndex = this.getAnimatedAssistantIndex();
-    const pendingHistory: ReturnType<typeof renderHistoryEntry> = [];
+  private renderPendingHistory(ctx: ReturnType<typeof createRenderContext>, animatedAssistantIndex: number | null) {
+    const historyRevision = this.store.getHistoryRevision();
+    const cached = this.pendingHistoryRenderCache;
+    if (
+      animatedAssistantIndex === null &&
+      cached?.historyRevision === historyRevision &&
+      cached.committedHistoryCount === this.committedHistoryCount &&
+      cached.width === ctx.width &&
+      cached.showThinking === this.state.showThinking
+    ) {
+      return cached.block;
+    }
+
+    const pendingHistory: Block = [];
     for (let index = this.committedHistoryCount; index < this.state.historyEntries.length;) {
       const entry = this.state.historyEntries[index];
       if (startsNewToolCell(this.state.historyEntries, index)) {
@@ -467,6 +477,25 @@ export class AgentApp {
       }
       index += 1;
     }
+
+    if (animatedAssistantIndex === null) {
+      this.pendingHistoryRenderCache = {
+        historyRevision,
+        committedHistoryCount: this.committedHistoryCount,
+        width: ctx.width,
+        showThinking: this.state.showThinking,
+        block: pendingHistory,
+      };
+    } else {
+      this.pendingHistoryRenderCache = null;
+    }
+
+    return pendingHistory;
+  }
+
+  private renderTransientLines(ctx: ReturnType<typeof createRenderContext>, suggestions: ReturnType<AgentApp['normalizeSuggestions']>) {
+    const animatedAssistantIndex = this.getAnimatedAssistantIndex();
+    const pendingHistory = this.renderPendingHistory(ctx, animatedAssistantIndex);
     const preview = renderOutputPreview(
       this.state.showThinking ? this.state.liveReasoningText : '',
       this.state.liveAssistantText,
@@ -521,8 +550,12 @@ export class AgentApp {
       this.backgroundTerminals.list().length,
     );
 
-    const topSections = [pendingHistory, preview].filter(section => section.length > 0);
-    const body = topSections.flatMap((section, index) => (index === 0 ? section : [blankLine(), ...section]));
+    const bodyBlocks: Block[] = [];
+    if (pendingHistory.length > 0) bodyBlocks.push(pendingHistory);
+    if (preview.length > 0) {
+      if (bodyBlocks.length > 0) bodyBlocks.push([blankLine()]);
+      bodyBlocks.push(preview);
+    }
     const bottomSections = [statusIndicator, pendingInput].filter(section => section.length > 0);
     const composerLead = bottomSections.length > 0
       ? [
@@ -533,11 +566,11 @@ export class AgentApp {
         ]
       : [blankLine()];
     const composerSurface = textPrompt ?? configPicker ?? statusPanel ?? choicePrompt ?? composer;
-    const blocks = body.length > 0
-      ? [body, composerLead, composerSurface, suggestionLines, footer]
+    const blocks = bodyBlocks.length > 0
+      ? [...bodyBlocks, composerLead, composerSurface, suggestionLines, footer]
       : [composerLead, composerSurface, suggestionLines, footer];
 
-    return serializeBlock(vstack(...blocks));
+    return serializeBlock(takeBlockTail(blocks, Math.max(1, ctx.height - 1)));
   }
 
   private get state() {
@@ -853,14 +886,14 @@ export class AgentApp {
         { backtracking: this.backtrackHistoryIndex !== null },
       );
       this.transcriptScrollOffset = Math.min(this.transcriptScrollOffset, rendered.maxScroll);
-      process.stdout.write(`\u001b[2J\u001b[H${serializeBlock(rendered.block).join('\n')}`);
+      process.stdout.write(synchronizedTerminalSequence(`\u001b[2J\u001b[H${serializeBlock(rendered.block).join('\n')}`));
       this.lastRenderColumns = columns;
       this.lastRenderRows = rows;
       this.lastRenderAt = Date.now();
       return;
     }
 
-    if (resized) this.resetRenderedScreen();
+    if (resized) this.clearTransientBlock();
 
     const suggestions = this.normalizeSuggestions();
     const ctx = createRenderContext(this.theme, false, columns, rows);
