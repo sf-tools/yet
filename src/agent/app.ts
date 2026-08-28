@@ -1,10 +1,11 @@
 import { createTheme } from '@/theme';
 import { createToolRegistry } from '@/tools';
 import { runUserShell } from './shell';
+import { BackgroundTerminalManager } from './background-terminals';
 import { randomUUID } from 'node:crypto';
 import { relative, resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { resolveInputBinding } from './keybinds';
+import { resolveInputBinding, splitInputEvents } from './keybinds';
 import { takeOverEarlyStdin } from './early-stdin';
 import { startMentionIndex } from './mention-index';
 import { discoverSkills, loadSkillInstructionMessages, renderSkillsCatalog, selectedSkills, type SkillMetadata } from './skills';
@@ -14,16 +15,30 @@ import { renderFooter } from '@/render/components/footer';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
 import type { ReadStream as TtyReadStream } from 'node:tty';
 import { renderHistoryEntry } from '@/render/components/entry';
+import {
+  commandActivityIsRunning,
+  isCommandToolEntry,
+  renderCommandActivity,
+} from '@/render/components/tools/command-activity';
 import { compactMessages, canCompactMessages } from './compact';
 import { renderSuggestions } from '@/render/components/suggestions';
 import { renderChoicePrompt, renderOutputPreview } from '@/render/components/transcript';
 import { renderConfigPicker } from '@/render/components/config-picker';
+import {
+  renderTranscriptContent,
+  renderTranscriptViewport,
+} from '@/render/components/transcript-overlay';
 import { renderPendingInput } from '@/render/components/pending-input';
 import { IMAGE_MEDIA_TYPES, parseDroppedImagePaths } from './path-detect';
 import { copyTextToClipboard } from './clipboard-text';
 import { readClipboardImage } from './clipboard-image';
 import { createFileChange, readOptionalFile } from '@/file-changes';
-import { builtinSlashCommands, createSlashCommandRegistry } from './slash-commands';
+import {
+  builtinSlashCommands,
+  createSlashCommandRegistry,
+  type ResolvedSlashCommand,
+  type SlashCommandContext,
+} from './slash-commands';
 import {
   createTurnContextEvent,
   hydrateStateFromSession,
@@ -55,6 +70,7 @@ import { getLastAssistantResponse, type AgentImagePart, type AgentMessage, type 
 import { runAgentLoop } from './runner';
 import { BlockStreamPump } from './block-stream';
 import {
+  isPotentiallyUnsafeCommand,
   resolvePermissionProfile,
   shouldPromptForTool,
   type PermissionMode,
@@ -73,11 +89,14 @@ import {
   type ChoiceSelection,
   type FileChange,
   type HistoryEntry,
+  type ToolHistoryEntry,
 } from '@/types';
 
 const RAINBOW_PHRASE_PATTERN = /you'?re absolutely right/i;
 const BRACKETED_PASTE_START = '\u001b[200~';
 const BRACKETED_PASTE_END = '\u001b[201~';
+const TRANSCRIPT_SCREEN_ENTER = '\u001b[?1049h\u001b[?1007h';
+const TRANSCRIPT_SCREEN_LEAVE = '\u001b[?1007l\u001b[?1049l';
 
 function bracketedPasteSuffixLength(text: string) {
   const maxLength = Math.min(text.length, BRACKETED_PASTE_START.length - 1);
@@ -91,6 +110,16 @@ function bracketedPasteSuffixLength(text: string) {
 
 function sameLines(left: string[], right: string[]) {
   return left.length === right.length && left.every((line, index) => line === right[index]);
+}
+
+function isCommandHistoryEntry(entry: HistoryEntry) {
+  return entry.type === 'tool' && isCommandToolEntry(entry);
+}
+
+function commandActivityEnd(entries: HistoryEntry[], start: number) {
+  let end = start;
+  while (end < entries.length && isCommandHistoryEntry(entries[end])) end += 1;
+  return end;
 }
 
 function estimateTokenCount(text: string) {
@@ -155,12 +184,23 @@ export class AgentApp {
   private lastTransientLines: string[] = [];
   private lastRenderColumns = 0;
   private lastRenderRows = 0;
-  private expandPreviews = false;
+  private transcriptOpen = false;
+  private transcriptScrollOffset = 0;
+  private transcriptContentCache: {
+    historyRevision: number;
+    width: number;
+    reasoning: string;
+    assistant: string;
+    content: ReturnType<typeof renderTranscriptContent>;
+  } | null = null;
   private readonly sessionFileBaselines = new Map<string, string | null>();
+  private readonly backgroundTerminals = new BackgroundTerminalManager(() => this.scheduleRender());
 
   private readonly tools = createToolRegistry({
     workspaceRoot: process.cwd(),
-    runUserShell,
+    execCommand: (command, options) => this.backgroundTerminals.exec(command, options),
+    writeStdin: (sessionId, chars, options) =>
+      this.backgroundTerminals.write(sessionId, chars, options),
     authorize: (request, authorization) => this.authorizeTool(request, authorization),
     getPermissionMode: () => this.state.permissionMode,
     getPlanningMode: () => this.state.planningMode,
@@ -322,6 +362,22 @@ export class AgentApp {
     while (this.committedHistoryCount < this.state.historyEntries.length) {
       const index = this.committedHistoryCount;
       const entry = this.state.historyEntries[index];
+      if (isCommandHistoryEntry(entry)) {
+        const end = commandActivityEnd(this.state.historyEntries, index);
+        const commands = this.state.historyEntries.slice(index, end) as ToolHistoryEntry[];
+        if (commandActivityIsRunning(commands)) break;
+        if (this.state.busy && end === this.state.historyEntries.length) break;
+        lines.push(...serializeBlock(renderCommandActivity(commands, ctx)));
+        if (
+          this.state.historyEntries
+            .slice(end)
+            .some(nextEntry => this.shouldRenderHistoryEntry(nextEntry))
+        ) {
+          lines.push('');
+        }
+        this.committedHistoryCount = end;
+        continue;
+      }
       if (entry.type === 'tool' && entry.status === 'running') break;
       if (index === animatedAssistantIndex) break;
 
@@ -335,13 +391,36 @@ export class AgentApp {
 
   private renderTransientLines(ctx: ReturnType<typeof createRenderContext>, suggestions: ReturnType<AgentApp['normalizeSuggestions']>) {
     const animatedAssistantIndex = this.getAnimatedAssistantIndex();
-    const pendingHistory = this.state.historyEntries.slice(this.committedHistoryCount).flatMap((entry, offset) => {
-      const index = this.committedHistoryCount + offset;
-      if (!this.shouldRenderHistoryEntry(entry)) return [];
-      return renderHistoryEntry(entry, ctx, {
-        animateAssistant: index === animatedAssistantIndex,
-      });
-    });
+    const pendingHistory: ReturnType<typeof renderHistoryEntry> = [];
+    for (let index = this.committedHistoryCount; index < this.state.historyEntries.length;) {
+      const entry = this.state.historyEntries[index];
+      if (isCommandHistoryEntry(entry)) {
+        const end = commandActivityEnd(this.state.historyEntries, index);
+        pendingHistory.push(
+          ...renderCommandActivity(
+            this.state.historyEntries.slice(index, end) as ToolHistoryEntry[],
+            ctx,
+          ),
+        );
+        if (
+          this.state.historyEntries
+            .slice(end)
+            .some(nextEntry => this.shouldRenderHistoryEntry(nextEntry))
+        ) {
+          pendingHistory.push(blankLine());
+        }
+        index = end;
+        continue;
+      }
+      if (this.shouldRenderHistoryEntry(entry)) {
+        pendingHistory.push(
+          ...renderHistoryEntry(entry, ctx, {
+            animateAssistant: index === animatedAssistantIndex,
+          }),
+        );
+      }
+      index += 1;
+    }
     const preview = renderOutputPreview(
       this.state.showThinking ? this.state.liveReasoningText : '',
       this.state.liveAssistantText,
@@ -379,7 +458,11 @@ export class AgentApp {
     const footer = choicePrompt || configPicker || suggestionLines.length > 0
       ? []
       : renderFooter(this.state, ctx);
-    const statusIndicator = renderStatusIndicator(this.state, this.busyStartedAt === null ? 0 : Date.now() - this.busyStartedAt);
+    const statusIndicator = renderStatusIndicator(
+      this.state,
+      this.busyStartedAt === null ? 0 : Date.now() - this.busyStartedAt,
+      this.backgroundTerminals.list().length,
+    );
 
     const topSections = [pendingHistory, preview].filter(section => section.length > 0);
     const body = topSections.flatMap((section, index) => (index === 0 ? section : [blankLine(), ...section]));
@@ -500,6 +583,7 @@ export class AgentApp {
 
     clearInterval(this.statusAnimationTimer);
     clearInterval(this.rainbowTimer);
+    this.backgroundTerminals.stopAll();
     if (this.renderTimer) clearTimeout(this.renderTimer);
     if (this.footerNoticeTimer) clearTimeout(this.footerNoticeTimer);
     process.stdout.off('resize', this.render);
@@ -507,6 +591,10 @@ export class AgentApp {
 
     if (this.stdin.isTTY) this.stdin.setRawMode(false);
     this.stdin.pause();
+    if (this.transcriptOpen && process.stdout.isTTY) {
+      this.transcriptOpen = false;
+      process.stdout.write(TRANSCRIPT_SCREEN_LEAVE);
+    }
     this.clearTransientBlock();
     if (process.stdout.isTTY) process.stdout.write('\u001b[?25h\u001b[?2004l');
 
@@ -597,7 +685,7 @@ export class AgentApp {
   }
 
   private createCurrentRenderContext() {
-    return createRenderContext(this.theme, this.expandPreviews, process.stdout.columns || 100, process.stdout.rows || 30);
+    return createRenderContext(this.theme, false, process.stdout.columns || 100, process.stdout.rows || 30);
   }
 
   private printEphemeralEntries(entries: HistoryEntry[]) {
@@ -619,10 +707,48 @@ export class AgentApp {
     const rows = process.stdout.rows || 30;
     const resized = this.lastRenderColumns > 0 && (columns !== this.lastRenderColumns || rows !== this.lastRenderRows);
 
+    if (this.transcriptOpen) {
+      const ctx = createRenderContext(this.theme, true, columns, rows);
+      const historyRevision = this.store.getHistoryRevision();
+      const reasoning = this.state.showThinking ? this.state.liveReasoningText : '';
+      const assistant = this.state.liveAssistantText;
+      const cached = this.transcriptContentCache;
+      if (
+        !cached ||
+        cached.historyRevision !== historyRevision ||
+        cached.width !== columns ||
+        cached.reasoning !== reasoning ||
+        cached.assistant !== assistant
+      ) {
+        this.transcriptContentCache = {
+          historyRevision,
+          width: columns,
+          reasoning,
+          assistant,
+          content: renderTranscriptContent(
+            this.state.historyEntries,
+            { reasoning, assistant },
+            ctx,
+          ),
+        };
+      }
+      const rendered = renderTranscriptViewport(
+        this.transcriptContentCache?.content ?? [],
+        this.transcriptScrollOffset,
+        ctx,
+      );
+      this.transcriptScrollOffset = Math.min(this.transcriptScrollOffset, rendered.maxScroll);
+      process.stdout.write(`\u001b[2J\u001b[H${serializeBlock(rendered.block).join('\n')}`);
+      this.lastRenderColumns = columns;
+      this.lastRenderRows = rows;
+      this.lastRenderAt = Date.now();
+      return;
+    }
+
     if (resized) this.resetRenderedScreen();
 
     const suggestions = this.normalizeSuggestions();
-    const ctx = createRenderContext(this.theme, this.expandPreviews, columns, rows);
+    const ctx = createRenderContext(this.theme, false, columns, rows);
 
     this.lastRenderColumns = columns;
     this.lastRenderRows = rows;
@@ -1071,6 +1197,78 @@ export class AgentApp {
     return this.tools;
   }
 
+  private toolCallTitle(toolName: string, input: unknown, toolCallId?: string) {
+    if (toolName !== 'write_stdin') return undefined;
+    if (toolCallId) {
+      const existing = this.state.historyEntries.find(
+        entry => entry.type === 'tool' && entry.toolCallId === toolCallId,
+      );
+      if (existing?.type === 'tool' && existing.title) return existing.title;
+    }
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+    const sessionId = (input as Record<string, unknown>).session_id;
+    return typeof sessionId === 'number'
+      ? this.backgroundTerminals.commandFor(sessionId)
+      : undefined;
+  }
+
+  private foldBackgroundInteractionIntoCommand(interaction: ToolHistoryEntry) {
+    if (interaction.toolName !== 'write_stdin') return;
+    if (!interaction.input || typeof interaction.input !== 'object' || Array.isArray(interaction.input)) return;
+    const sessionId = (interaction.input as Record<string, unknown>).session_id;
+    if (typeof sessionId !== 'number') return;
+
+    const parseOutput = (entry: ToolHistoryEntry) => {
+      if (typeof entry.output !== 'string') return null;
+      try {
+        const parsed = JSON.parse(entry.output) as unknown;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : null;
+      } catch {
+        return null;
+      }
+    };
+    const command = [...this.state.historyEntries].reverse().find(entry => {
+      if (entry.type !== 'tool' || entry.toolName !== 'exec_command') return false;
+      return parseOutput(entry)?.session_id === sessionId;
+    });
+    if (!command || command.type !== 'tool') return;
+    const commandOutput = parseOutput(command);
+    const interactionOutput = parseOutput(interaction);
+    if (!commandOutput || !interactionOutput) return;
+
+    const output = [commandOutput.output, interactionOutput.output]
+      .filter(value => typeof value === 'string' && value.length > 0)
+      .join('\n');
+    const next: Record<string, unknown> = {
+      ...commandOutput,
+      output,
+      wall_time_seconds: interactionOutput.wall_time_seconds ?? commandOutput.wall_time_seconds,
+      ...(interactionOutput.exit_code === undefined
+        ? { session_id: interactionOutput.session_id ?? sessionId }
+        : { exit_code: interactionOutput.exit_code }),
+      ...(interactionOutput.original_token_count === undefined
+        ? {}
+        : { original_token_count: interactionOutput.original_token_count }),
+      ...(interactionOutput.error === undefined ? {} : { error: interactionOutput.error }),
+    };
+    if (interactionOutput.exit_code !== undefined || interactionOutput.error !== undefined) {
+      delete next.session_id;
+    }
+    const updated: ToolHistoryEntry = {
+      ...command,
+      output: JSON.stringify(next),
+      status:
+        interactionOutput.error !== undefined ||
+        (typeof interactionOutput.exit_code === 'number' && interactionOutput.exit_code !== 0)
+          ? 'failed'
+          : 'completed',
+    };
+    this.store.upsertToolEntry(updated);
+    this.recordSessionEvent({ type: 'tool_result', payload: { entry: updated } });
+  }
+
   private getLastAssistantResponse() {
     return getLastAssistantResponse(this.state.messages);
   }
@@ -1108,7 +1306,7 @@ export class AgentApp {
           '- Planning mode is enabled for this turn.',
           '- Focus on discovery, tradeoffs, and a concrete step-by-step plan.',
           '- Do not make file edits or run mutating commands.',
-          '- Use shell only for read-only inspection and do not call apply_patch.',
+          '- Use exec_command and write_stdin only for read-only inspection and do not call apply_patch.',
           '- End with a concise recommendation and plan.',
           '</session-mode>',
         ].join('\n')
@@ -1150,10 +1348,87 @@ export class AgentApp {
     return this.state.autoCompactEnabled && this.state.lastPromptTokens >= getCompactionTriggerTokens(this.state.currentModel);
   }
 
-  private togglePreviewExpansion() {
-    this.expandPreviews = !this.expandPreviews;
-    this.resetRenderedScreen();
-    this.showFooterNotice(this.expandPreviews ? 'Expanded previews' : 'Collapsed previews');
+  private openTranscript() {
+    if (this.transcriptOpen || !process.stdout.isTTY) return;
+    this.clearTransientBlock();
+    this.transcriptOpen = true;
+    this.transcriptScrollOffset = 0;
+    this.transcriptContentCache = null;
+    process.stdout.write(TRANSCRIPT_SCREEN_ENTER);
+    this.render();
+  }
+
+  private closeTranscript() {
+    if (!this.transcriptOpen) return;
+    this.transcriptOpen = false;
+    this.transcriptScrollOffset = 0;
+    this.transcriptContentCache = null;
+    this.transientLineCount = 0;
+    this.lastTransientLines = [];
+    if (process.stdout.isTTY) process.stdout.write(TRANSCRIPT_SCREEN_LEAVE);
+    this.render();
+  }
+
+  private handleTranscriptBinding(binding: ReturnType<typeof resolveInputBinding>) {
+    if (!this.transcriptOpen || !binding) return false;
+    if (
+      binding.type === 'toggleTranscript' ||
+      binding.type === 'escape' ||
+      binding.type === 'interrupt' ||
+      (binding.type === 'insertText' && binding.text.toLowerCase() === 'q')
+    ) {
+      this.closeTranscript();
+      return true;
+    }
+    if (binding.type === 'moveSuggestion') {
+      this.transcriptScrollOffset = Math.max(0, this.transcriptScrollOffset - binding.delta);
+      this.scheduleRender();
+      return true;
+    }
+    if (binding.type === 'insertText' && (binding.text === 'k' || binding.text === 'j')) {
+      this.transcriptScrollOffset = Math.max(
+        0,
+        this.transcriptScrollOffset + (binding.text === 'k' ? 1 : -1),
+      );
+      this.scheduleRender();
+      return true;
+    }
+    if (binding.type === 'insertText' && binding.text === ' ') {
+      const page = Math.max(1, (process.stdout.rows || 30) - 4);
+      this.transcriptScrollOffset = Math.max(0, this.transcriptScrollOffset - page);
+      this.scheduleRender();
+      return true;
+    }
+    if (binding.type === 'pageTranscript') {
+      const page = Math.max(1, (process.stdout.rows || 30) - 4);
+      this.transcriptScrollOffset = Math.max(
+        0,
+        this.transcriptScrollOffset + binding.delta * page,
+      );
+      this.scheduleRender();
+      return true;
+    }
+    if (binding.type === 'halfPageTranscript') {
+      const contentHeight = Math.max(1, (process.stdout.rows || 30) - 4);
+      const halfPage = Math.ceil(contentHeight / 2);
+      this.transcriptScrollOffset = Math.max(
+        0,
+        this.transcriptScrollOffset + binding.delta * halfPage,
+      );
+      this.scheduleRender();
+      return true;
+    }
+    if (binding.type === 'cursorHome') {
+      this.transcriptScrollOffset = Number.MAX_SAFE_INTEGER;
+      this.scheduleRender();
+      return true;
+    }
+    if (binding.type === 'cursorEnd') {
+      this.transcriptScrollOffset = 0;
+      this.scheduleRender();
+      return true;
+    }
+    return true;
   }
 
   private async refreshSessionFileChanges(paths: string[]) {
@@ -1534,15 +1809,29 @@ export class AgentApp {
     this.render();
 
     try {
-      const result = await this.tools.execute('shell', { command: cmd });
-      const output = result.output.replace(/\n\nexit code: -?\d+$/, '');
-      const exitCodeMatch = result.output.match(/\n\nexit code: (-?\d+)$/);
-      const exitCode = exitCodeMatch ? Number(exitCodeMatch[1]) : 1;
-      const trimmed = output.trimEnd();
+      const potentiallyUnsafe = isPotentiallyUnsafeCommand(trimmedCommand);
+      const allowed = await this.authorizeTool(
+        {
+          scope: 'command',
+          title: 'Run command',
+          detail: trimmedCommand,
+        },
+        { requested: 'workspace', potentiallyUnsafe },
+      );
+      if (!allowed) throw new Error('command denied by user');
+      const profile = resolvePermissionProfile(this.state.permissionMode, {
+        readOnly: this.state.planningMode,
+      });
+      const result = await runUserShell(cmd, {
+        workspaceRoot: process.cwd(),
+        cwd: process.cwd(),
+        sandboxMode: profile.sandboxMode,
+      });
+      const trimmed = result.output.trimEnd();
 
-      this.persistEntry(EntryKind.Shell, `${trimmedCommand} exit ${exitCode}`);
+      this.persistEntry(EntryKind.Shell, `${trimmedCommand} exit ${result.exitCode}`);
       if (trimmed) this.persistAnsi(trimmed);
-      else if (exitCode === 0) this.persistPlain('(no output)');
+      else if (result.exitCode === 0) this.persistPlain('(no output)');
     } catch (error: unknown) {
       this.persistEntry(EntryKind.Error, plain(error instanceof Error ? error.message : String(error)));
     } finally {
@@ -1568,6 +1857,76 @@ export class AgentApp {
     } finally {
       this.drainingQueuedSubmissions = false;
     }
+  }
+
+  private createSlashCommandContext(): SlashCommandContext {
+    return {
+      store: this.store,
+      cleanup: code => this.cleanup(code),
+      deleteCurrentSession: () => this.deleteCurrentSession(),
+      forkCurrentSession: name => this.forkCurrentSession(name),
+      startSideConversation: question => this.startSideConversation(question),
+      compactConversation: options => this.compactConversation(options),
+      setCurrentModel: model => this.setCurrentModel(model),
+      setThinkingMode: thinkingMode => this.setThinkingMode(thinkingMode),
+      setFastModeEnabled: enabled => this.setFastModeEnabled(enabled),
+      setPermissionMode: permissionMode => this.setPermissionMode(permissionMode),
+      setPlanningMode: enabled => this.setPlanningMode(enabled),
+      enqueueSubmission: (text, options) =>
+        this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
+      openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
+      openConfigPicker: () => this.openConfigPicker(),
+      requestChoice: request => this.requestChoice(request),
+      showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
+      getActiveToolSummaries: () => this.getActiveToolSummaries(),
+      getSessionId: () => this.sessionId,
+      switchToSession: sessionId => this.switchToSession(sessionId),
+      getLastRequestId: () => this.lastRequestId,
+      getLastAssistantResponse: () => this.getLastAssistantResponse(),
+      getThreadTitle: () => this.threadTitle,
+      getSessionLineage: () => ({
+        ...(this.sessionParentId ? { parentSessionId: this.sessionParentId } : {}),
+        ...(typeof this.sessionForkPoint === 'number'
+          ? { forkPoint: this.sessionForkPoint }
+          : {}),
+        side: this.sideConversationActive,
+      }),
+      setThreadTitle: title => this.setThreadTitle(title),
+      copyToClipboard: text => copyTextToClipboard(text),
+      listBackgroundTerminals: () => this.backgroundTerminals.list(),
+      stopBackgroundTerminals: () => this.backgroundTerminals.stopAll(),
+      printEntries: entries => this.printEphemeralEntries(entries),
+      persistEntries: entries => this.persistHistoryEntries(entries),
+    };
+  }
+
+  private async runImmediateBackgroundCommand(command: ResolvedSlashCommand) {
+    if (!['ps', 'stop'].includes(command.command.name)) return false;
+
+    if (this.sideConversationActive) {
+      this.persistEntry(
+        EntryKind.Error,
+        `/${command.invocation} is unavailable in side conversations. Press Ctrl+C to return to the main thread first.`,
+      );
+      return true;
+    }
+
+    try {
+      await command.command.execute(this.createSlashCommandContext(), {
+        raw: command.argsText
+          ? `/${command.invocation} ${command.argsText}`
+          : `/${command.invocation}`,
+        invocation: command.invocation,
+        argsText: command.argsText,
+        argv: command.argv,
+      });
+    } catch (error: unknown) {
+      this.persistEntry(
+        EntryKind.Error,
+        plain(error instanceof Error ? error.message : String(error)),
+      );
+    }
+    return true;
   }
 
   private async processSubmission(submission: string | QueuedSubmission) {
@@ -1614,40 +1973,7 @@ export class AgentApp {
 
       try {
         await slashCommand.command.execute(
-          {
-            store: this.store,
-            cleanup: code => this.cleanup(code),
-            deleteCurrentSession: () => this.deleteCurrentSession(),
-            forkCurrentSession: name => this.forkCurrentSession(name),
-            startSideConversation: question => this.startSideConversation(question),
-            compactConversation: options => this.compactConversation(options),
-            setCurrentModel: model => this.setCurrentModel(model),
-            setThinkingMode: thinkingMode => this.setThinkingMode(thinkingMode),
-            setFastModeEnabled: enabled => this.setFastModeEnabled(enabled),
-            setPermissionMode: permissionMode => this.setPermissionMode(permissionMode),
-            setPlanningMode: enabled => this.setPlanningMode(enabled),
-            enqueueSubmission: (text, options) => this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
-            openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
-            openConfigPicker: () => this.openConfigPicker(),
-            requestChoice: request => this.requestChoice(request),
-            showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
-            getActiveToolSummaries: () => this.getActiveToolSummaries(),
-            getSessionId: () => this.sessionId,
-            switchToSession: sessionId => this.switchToSession(sessionId),
-            getLastRequestId: () => this.lastRequestId,
-            getLastAssistantResponse: () => this.getLastAssistantResponse(),
-            getThreadTitle: () => this.threadTitle,
-            getSessionLineage: () => ({
-              ...(this.sessionParentId ? { parentSessionId: this.sessionParentId } : {}),
-              ...(typeof this.sessionForkPoint === 'number'
-                ? { forkPoint: this.sessionForkPoint }
-                : {}),
-              side: this.sideConversationActive,
-            }),
-            setThreadTitle: title => this.setThreadTitle(title),
-            copyToClipboard: text => copyTextToClipboard(text),
-            printEntries: entries => this.printEphemeralEntries(entries),
-          },
+          this.createSlashCommandContext(),
           {
             raw: trimmed,
             invocation: slashCommand.invocation,
@@ -1796,6 +2122,7 @@ export class AgentApp {
                 toolCallId: event.call.id,
                 toolName: event.call.name,
                 input: event.call.input,
+                title: this.toolCallTitle(event.call.name, event.call.input),
               };
               const entry = createPendingToolEntry(part);
               this.store.upsertToolEntry(entry);
@@ -1812,10 +2139,12 @@ export class AgentApp {
                 toolName: event.call.name,
                 input: event.call.input,
                 output: event.result.output,
+                title: this.toolCallTitle(event.call.name, event.call.input, event.call.id),
                 fileChanges: event.result.fileChanges,
               };
               const entry = createCompletedToolEntry(part);
               this.store.upsertToolEntry(entry);
+              this.foldBackgroundInteractionIntoCommand(entry);
               this.recordSessionEvent({
                 type: 'tool_result',
                 payload: { entry, message: event.message },
@@ -1829,6 +2158,7 @@ export class AgentApp {
                 toolCallId: event.call.id,
                 toolName: event.call.name,
                 input: event.call.input,
+                title: this.toolCallTitle(event.call.name, event.call.input, event.call.id),
                 error: event.error,
               });
               this.store.upsertToolEntry(entry);
@@ -2071,6 +2401,13 @@ export class AgentApp {
     this.render();
 
     const slashCommand = this.slashCommands.parse(trimmed);
+    if (
+      this.state.busy &&
+      slashCommand?.type === 'resolved' &&
+      (await this.runImmediateBackgroundCommand(slashCommand))
+    ) {
+      return;
+    }
     if (this.state.busy && this.state.abortController && !slashCommand) {
       this.store.enqueuePendingSteer({ text: raw });
       this.render();
@@ -2358,6 +2695,8 @@ export class AgentApp {
   private handleInputBinding = async (binding: ReturnType<typeof resolveInputBinding>) => {
     if (!binding) return;
 
+    if (this.handleTranscriptBinding(binding)) return;
+
     if (binding.type === 'pasteImage') {
       await this.pasteClipboardImage();
       return;
@@ -2411,13 +2750,13 @@ export class AgentApp {
       return;
     }
 
-    if (binding.type === 'toggleThinkingMode') {
-      this.cycleThinkingMode();
+    if (binding.type === 'toggleTranscript') {
+      this.openTranscript();
       return;
     }
 
-    if (binding.type === 'togglePreviews') {
-      this.togglePreviewExpansion();
+    if (binding.type === 'toggleThinkingMode') {
+      this.cycleThinkingMode();
       return;
     }
 
@@ -2455,6 +2794,9 @@ export class AgentApp {
         await this.moveInputHistory(binding.delta);
         return;
       }
+      case 'pageTranscript':
+      case 'halfPageTranscript':
+        return;
       case 'backspace':
         this.handleDelete(true);
         return;
@@ -2528,7 +2870,11 @@ export class AgentApp {
       const complete = this.stdinBuffer.slice(0, this.stdinBuffer.length - suffixLength);
       this.stdinBuffer = this.stdinBuffer.slice(this.stdinBuffer.length - suffixLength);
 
-      if (complete) await this.processNonPasteInput(complete);
+      if (complete) {
+        const split = splitInputEvents(complete);
+        for (const event of split.events) await this.processNonPasteInput(event);
+        this.stdinBuffer = split.remainder + this.stdinBuffer;
+      }
       return;
     }
   };

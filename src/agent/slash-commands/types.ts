@@ -2,6 +2,7 @@ import type { ThinkingMode } from '@/config';
 import type { PermissionMode } from '@/permissions';
 import type { AgentStore } from '@/store';
 import type { ChoiceRequest, ChoiceSelection, HistoryEntry } from '@/types';
+import type { BackgroundTerminalSummary } from '@/agent/background-terminals';
 
 export type SlashCommandArgs = {
   raw: string;
@@ -36,7 +37,10 @@ export type SlashCommandContext = {
   getSessionLineage(): { parentSessionId?: string; forkPoint?: number; side: boolean };
   setThreadTitle(title: string | null): void;
   copyToClipboard(text: string): Promise<void>;
+  listBackgroundTerminals(): BackgroundTerminalSummary[];
+  stopBackgroundTerminals(): number;
   printEntries(entries: HistoryEntry[]): void;
+  persistEntries(entries: HistoryEntry[]): void;
 };
 
 export type TextStyle = (text: string) => string;

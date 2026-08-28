@@ -9,7 +9,7 @@ export function frameWidth(columns = process.stdout.columns || 100) {
 
 export function createRenderContext(
   theme: ThemePalette,
-  expandPreviews = false,
+  transcriptMode = false,
   columns = process.stdout.columns || 100,
   rows = process.stdout.rows || 30,
 ): RenderContext {
@@ -20,6 +20,6 @@ export function createRenderContext(
     height: rows,
     cwd: formatWorkspacePath(cwd),
     theme,
-    expandPreviews,
+    transcriptMode,
   };
 }

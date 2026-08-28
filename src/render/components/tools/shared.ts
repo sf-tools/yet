@@ -45,13 +45,11 @@ export function formatBytes(value: number) {
 }
 
 export function previewLines(lines: string[], ctx: RenderContext, maxLines = 6, label = 'lines') {
-  if (ctx.expandPreviews || lines.length <= maxLines) {
-    return lines.length > maxLines ? [...lines, '… (ctrl+o to collapse)'] : lines;
-  }
+  if (ctx.transcriptMode || lines.length <= maxLines) return lines;
 
   return [
     ...lines.slice(0, maxLines),
-    `… (${lines.length - maxLines} more ${label}, ctrl+o to expand)`,
+    `… +${lines.length - maxLines} ${label} (ctrl + t to view transcript)`,
   ];
 }
 
@@ -109,22 +107,18 @@ export function previewCodeBlock(
   label = 'lines',
 ): Block {
   const highlighted = highlightedCodeBlock(text, language, ctx);
-  const visible = ctx.expandPreviews ? highlighted : highlighted.slice(0, maxLines);
+  const visible = ctx.transcriptMode ? highlighted : highlighted.slice(0, maxLines);
 
   if (highlighted.length > visible.length) {
     return [
       ...visible,
       line(
         span(
-          `… (${highlighted.length - visible.length} more ${label}, ctrl+o to expand)`,
+          `… +${highlighted.length - visible.length} ${label} (ctrl + t to view transcript)`,
           ctx.theme.dimmed,
         ),
       ),
     ];
-  }
-
-  if (ctx.expandPreviews && highlighted.length > maxLines) {
-    return [...visible, line(span('… (ctrl+o to collapse)', ctx.theme.dimmed))];
   }
 
   return visible;
@@ -241,7 +235,7 @@ export function renderFileChanges(
 
     const parsedLines = parseDiffLines(fileChange.diff);
     const width = lineNumberWidth(parsedLines);
-    const visibleLines = ctx.expandPreviews ? parsedLines : parsedLines.slice(0, maxLinesPerFile);
+    const visibleLines = ctx.transcriptMode ? parsedLines : parsedLines.slice(0, maxLinesPerFile);
 
     for (const diffLine of visibleLines) {
       if (diffLine.type === 'chunk') {
@@ -280,14 +274,10 @@ export function renderFileChanges(
         line(
           span('  ', ctx.theme.subtle),
           span(
-            `… (${parsedLines.length - visibleLines.length} more diff lines, ctrl+o to expand)`,
+            `… +${parsedLines.length - visibleLines.length} diff lines (ctrl + t to view transcript)`,
             ctx.theme.dimmed,
           ),
         ),
-      );
-    } else if (ctx.expandPreviews && parsedLines.length > maxLinesPerFile) {
-      block.push(
-        line(span('  ', ctx.theme.subtle), span('… (ctrl+o to collapse)', ctx.theme.dimmed)),
       );
     }
   });

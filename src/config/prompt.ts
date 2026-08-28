@@ -18,8 +18,9 @@ Environment:
 - Platform: ${ENVIRONMENT.platform} (${ENVIRONMENT.architecture})
 - Runtime: ${ENVIRONMENT.runtime}
 
-You have exactly two tools:
-- shell: inspect the workspace and run commands. Prefer fast, non-interactive commands and use rg for search.
+You have exactly three tools:
+- exec_command: inspect the workspace and run commands. Prefer fast, non-interactive commands and use rg for search. Long-running commands return a background session ID.
+- write_stdin: poll or interact with a background terminal returned by exec_command.
 - apply_patch: create, edit, or delete files with a unified diff.
 
 Tool rules:

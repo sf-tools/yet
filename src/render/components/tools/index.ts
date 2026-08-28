@@ -2,10 +2,11 @@ import type { ToolHistoryEntry } from '@/types';
 import type { Block, RenderContext } from '@/render/types';
 import { renderApplyPatchTool } from './apply-patch';
 import { renderGenericTool } from './generic';
-import { renderShellTool } from './shell';
+import { renderCommandActivity } from './command-activity';
 
 const renderers: Record<string, (entry: ToolHistoryEntry, ctx: RenderContext) => Block> = {
-  shell: renderShellTool,
+  exec_command: (entry, ctx) => renderCommandActivity([entry], ctx),
+  write_stdin: (entry, ctx) => renderCommandActivity([entry], ctx),
   apply_patch: renderApplyPatchTool,
 };
 

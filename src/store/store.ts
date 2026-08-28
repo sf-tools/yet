@@ -17,7 +17,8 @@ function hasVisibleContent(entry: HistoryEntry) {
     entry.type === 'tool' ||
     entry.type === 'compacted' ||
     entry.type === 'forked' ||
-    entry.type === 'resume_hint'
+    entry.type === 'resume_hint' ||
+    entry.type === 'background_processes'
   ) return true;
   if (entry.type === 'plain' || entry.type === 'ansi') return entry.text.trim().length > 0;
   return entry.text.trim().length > 0;
@@ -87,6 +88,7 @@ function removePasteRange(state: AgentState, target: AgentState['pasteRanges'][n
 
 function buildAgentStore(initialState: AgentState) {
   const state = initialState;
+  let historyRevision = 0;
 
   return {
     getState() {
@@ -95,7 +97,12 @@ function buildAgentStore(initialState: AgentState) {
 
     update(updater: (state: AgentState) => void) {
       updater(state);
+      historyRevision += 1;
       return state;
+    },
+
+    getHistoryRevision() {
+      return historyRevision;
     },
 
     setClosed(closed = true) {
@@ -302,7 +309,10 @@ function buildAgentStore(initialState: AgentState) {
     },
 
     pushHistoryEntry(entry: HistoryEntry) {
-      if (hasVisibleContent(entry)) state.historyEntries.push(entry);
+      if (hasVisibleContent(entry)) {
+        state.historyEntries.push(entry);
+        historyRevision += 1;
+      }
       return state;
     },
 
@@ -311,7 +321,10 @@ function buildAgentStore(initialState: AgentState) {
       if (index < 0) return state;
 
       const nextEntry = updater(state.historyEntries[index]);
-      if (nextEntry) state.historyEntries[index] = nextEntry;
+      if (nextEntry) {
+        state.historyEntries[index] = nextEntry;
+        historyRevision += 1;
+      }
       return state;
     },
 
@@ -348,6 +361,7 @@ function buildAgentStore(initialState: AgentState) {
 
       if (index === -1) state.historyEntries.push(entry);
       else state.historyEntries[index] = entry;
+      historyRevision += 1;
 
       return state;
     },
@@ -364,6 +378,7 @@ function buildAgentStore(initialState: AgentState) {
 
     replaceState(nextState: AgentState) {
       Object.assign(state, nextState);
+      historyRevision += 1;
       return state;
     },
 

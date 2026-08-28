@@ -64,6 +64,7 @@ export function formatElapsedCompact(elapsedSeconds: number) {
 export function renderStatusIndicator(
   state: AgentState,
   elapsedMs: number,
+  backgroundTerminalCount = 0,
   now = Date.now(),
 ): Block {
   if (!state.busy || state.pendingApproval || state.pendingChoice || state.configPicker) return [];
@@ -76,6 +77,15 @@ export function renderStatusIndicator(
       span(' '),
       ...shimmerSegments('Working', now),
       span(` (${elapsed} • esc to interrupt)`, chalk.dim),
+      ...(backgroundTerminalCount > 0
+        ? [
+            span(' · ', chalk.dim),
+            span(
+              `${backgroundTerminalCount} background terminal${backgroundTerminalCount === 1 ? '' : 's'} running · /ps to view · /stop to close`,
+              chalk.dim,
+            ),
+          ]
+        : []),
     ),
   ];
 }

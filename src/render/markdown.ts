@@ -19,7 +19,7 @@ import 'prismjs/components/prism-toml.js';
 import 'prismjs/components/prism-sql.js';
 import 'prismjs/components/prism-markdown.js';
 
-import { repeat, widthOf } from '@/text';
+import { repeat, truncateToWidth, widthOf } from '@/text';
 import { indent, prefixWidth } from './layout';
 import { blankLine, line, span } from './primitives';
 import type { Block, RenderContext, Segment, Style, StyledLine } from './types';
@@ -125,17 +125,28 @@ function wrapInlinePieces(pieces: InlinePiece[], width: number): StyledLine[] {
     currentWidth = 0;
   };
 
+  const pushAtom = (text: string, style?: Style) => {
+    if (!text) return;
+    const atomWidth = widthOf(text);
+    if (!/^\s+$/.test(text) && segments.length > 0 && currentWidth + atomWidth > safeWidth) {
+      flushLine();
+    }
+
+    for (const ch of Array.from(text)) {
+      const chWidth = Math.max(1, widthOf(ch));
+      if (segments.length > 0 && currentWidth + chWidth > safeWidth) flushLine();
+      pushText(ch, style);
+      currentWidth += chWidth;
+    }
+  };
+
   for (const piece of pieces) {
     if (piece.type === 'break') {
       flushLine(true);
       continue;
     }
-
-    for (const ch of Array.from(piece.segment.text)) {
-      const chWidth = Math.max(1, widthOf(ch));
-      if (segments.length > 0 && currentWidth + chWidth > safeWidth) flushLine();
-      pushText(ch, piece.segment.style);
-      currentWidth += chWidth;
+    for (const atom of piece.segment.text.match(/\s+|\S+/gu) ?? []) {
+      pushAtom(atom, piece.segment.style);
     }
   }
 
@@ -242,7 +253,7 @@ function collectInlineRange(
         appendText(
           pieces,
           token.content,
-          composeStyles(inheritedStyle, value => chalk.bgHex(env.ctx.theme.composerBg())(value)),
+          composeStyles(inheritedStyle, chalk.cyan),
         );
         index += 1;
         break;
@@ -303,24 +314,24 @@ function collectInlineRange(
         );
         pieces.push(...inner.pieces);
 
-        const label = plainText(inner.pieces).trim();
         const normalizedHref = href == null ? undefined : String(href).trim();
-        if (normalizedHref && normalizedHref !== label)
-          appendSegment(pieces, ` <${normalizedHref}>`, env.ctx.theme.dimmed);
+        if (normalizedHref) {
+          appendSegment(pieces, ' (', inheritedStyle);
+          appendSegment(
+            pieces,
+            normalizedHref,
+            composeStyles(inheritedStyle, chalk.cyan.underline),
+          );
+          appendSegment(pieces, ')', inheritedStyle);
+        }
 
         index = inner.next;
         break;
       }
 
       case 'image': {
-        const alt = token.content || getAttr(token, 'alt') || 'image';
-        const src = getAttr(token, 'src');
-        appendText(
-          pieces,
-          `[image: ${alt}]`,
-          composeStyles(inheritedStyle, value => chalk.magenta(value)),
-        );
-        if (src) appendSegment(pieces, ` <${src}>`, env.ctx.theme.dimmed);
+        const alt = String(token.content || getAttr(token, 'alt') || 'image');
+        appendText(pieces, alt, inheritedStyle);
         index += 1;
         break;
       }
@@ -363,9 +374,10 @@ function renderHeading(
   const level = Number.parseInt(token.tag.slice(1), 10) || 1;
   const prefix = `${'#'.repeat(Math.max(1, Math.min(level, 6)))} `;
   const headingStyle: Style = value => {
-    if (level === 1) return chalk.bold.cyanBright(value);
-    if (level === 2) return chalk.bold.blueBright(value);
-    return chalk.bold(value);
+    if (level === 1) return chalk.bold.underline(value);
+    if (level === 2) return chalk.bold(value);
+    if (level === 3) return chalk.bold.italic(value);
+    return chalk.italic(value);
   };
 
   const lines = renderInline(children, env, headingStyle);
@@ -379,17 +391,121 @@ function renderCodeBlock(token: MarkdownToken, env: RenderEnv): Block {
   const rawLanguage = token.info.trim().split(/\s+/)[0] || null;
   const language = normalizeCodeLanguage(rawLanguage);
   const content = token.content.replace(/\n$/, '');
-  const lines = highlightedCodeBlock(content, language, env.ctx);
-  const body = indent(lines, [span('│ ', env.ctx.theme.subtle)]);
-
-  if (!rawLanguage) return body;
-  return [line(span(`code · ${rawLanguage}`, env.ctx.theme.subtle)), ...body];
+  return highlightedCodeBlock(content, language, env.ctx);
 }
 
 function appendBlock(out: Block, block: Block, withSpacing = true) {
   if (block.length === 0) return;
   if (withSpacing && out.length > 0) out.push(blankLine());
   out.push(...block);
+}
+
+function renderTable(
+  tokens: MarkdownToken[],
+  env: RenderEnv,
+  start: number,
+): { block: Block; next: number } {
+  const rows: string[][] = [];
+  const alignments: Array<'left' | 'center' | 'right'> = [];
+  let row: string[] | null = null;
+  let index = start + 1;
+
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token.type === 'table_close') break;
+    if (token.type === 'tr_open') row = [];
+    if (token.type === 'tr_close' && row) {
+      rows.push(row);
+      row = null;
+    }
+    if ((token.type === 'th_open' || token.type === 'td_open') && row) {
+      const inline = tokens[index + 1];
+      const text = inline?.type === 'inline'
+        ? plainText(collectInlineRange(inline.children ?? [], env).pieces).replace(/\s+/g, ' ').trim()
+        : '';
+      row.push(text);
+      if (rows.length === 0) {
+        const style = String(getAttr(token, 'style') ?? '');
+        alignments.push(
+          style.includes('center') ? 'center' : style.includes('right') ? 'right' : 'left',
+        );
+      }
+    }
+    index += 1;
+  }
+
+  if (rows.length === 0) return { block: [], next: index + 1 };
+  const columnCount = Math.max(...rows.map(current => current.length));
+  const widths = Array.from({ length: columnCount }, (_, column) =>
+    Math.max(3, ...rows.map(current => widthOf(current[column] ?? ''))),
+  );
+  const gapWidth = Math.max(0, columnCount - 1) * 2;
+  const paddingWidth = columnCount * 2;
+  while (widths.reduce((sum, value) => sum + value, 0) + gapWidth + paddingWidth > env.width) {
+    const widest = widths.reduce((best, value, column) =>
+      value > widths[best] ? column : best, 0);
+    if (widths[widest] <= 3) break;
+    widths[widest] -= 1;
+  }
+
+  const tableWidth = widths.reduce((sum, value) => sum + value, 0) + gapWidth + paddingWidth;
+  if (tableWidth > env.width && rows.length > 1) {
+    const header = rows[0] ?? [];
+    const recordWidth = Math.max(1, env.width - 2);
+    const block: Block = [];
+    rows.slice(1).forEach((current, rowIndex) => {
+      if (rowIndex > 0) block.push(line(span(repeat('─', env.width), env.ctx.theme.subtle)));
+      header.forEach((label, column) => {
+        block.push(line(span(' '), span(label, chalk.bold)));
+        block.push(...indent(textToBlock(current[column] ?? '', recordWidth), '  '));
+      });
+    });
+    return { block, next: index + 1 };
+  }
+
+  const pad = (value: string, column: number) => {
+    const visible = truncateToWidth(value, widths[column]);
+    const remaining = Math.max(0, widths[column] - widthOf(visible));
+    const alignment = alignments[column] ?? 'left';
+    const left = alignment === 'right' ? remaining : alignment === 'center' ? Math.floor(remaining / 2) : 0;
+    const right = remaining - left;
+    return `${' '.repeat(left)}${visible}${' '.repeat(right)}`;
+  };
+  const block: Block = [];
+  rows.forEach((current, rowIndex) => {
+    if (rowIndex > 1) {
+      block.push(
+        line(
+          span(' '),
+          ...widths.flatMap((value, column) => [
+            ...(column > 0 ? [span('  ')] : []),
+            span(repeat('─', value + 2), env.ctx.theme.subtle),
+          ]),
+        ),
+      );
+    }
+    block.push(
+      line(
+        span(' '),
+        ...current.flatMap((value, column) => [
+          ...(column > 0 ? [span('  ')] : []),
+          span(` ${pad(value, column)} `, rowIndex === 0 ? chalk.bold : undefined),
+        ]),
+      ),
+    );
+    if (rowIndex === 0) {
+      block.push(
+        line(
+          span(' '),
+          ...widths.flatMap((value, column) => [
+            ...(column > 0 ? [span('  ')] : []),
+            span(repeat('━', value + 2), chalk.cyan),
+          ]),
+        ),
+      );
+    }
+  });
+  return { block, next: index + 1 };
 }
 
 function renderRange(
@@ -430,6 +546,13 @@ function renderRange(
         break;
       }
 
+      case 'table_open': {
+        const rendered = renderTable(tokens, env, index);
+        appendBlock(out, rendered.block);
+        index = rendered.next;
+        break;
+      }
+
       case 'blockquote_open': {
         const inner = renderRange(
           tokens,
@@ -437,7 +560,17 @@ function renderRange(
           index + 1,
           'blockquote_close',
         );
-        appendBlock(out, indent(inner.block, [span('▎ ', env.ctx.theme.subtle)]));
+        appendBlock(
+          out,
+          indent(inner.block, [span('> ', chalk.green)], [span('> ', chalk.green)]).map(entry => {
+            if (entry.type === 'raw') return entry;
+            return line(
+              ...entry.segments.map(segment =>
+                span(segment.text, composeStyles(segment.style, chalk.green)),
+              ),
+            );
+          }),
+        );
         index = inner.next;
         break;
       }
@@ -449,7 +582,7 @@ function renderRange(
         break;
 
       case 'hr':
-        appendBlock(out, [line(span(repeat('─', Math.max(1, env.width)), env.ctx.theme.subtle))]);
+        appendBlock(out, [line(span('———'))]);
         index += 1;
         break;
 
@@ -483,6 +616,7 @@ function renderList(
   const out: Block = [];
   let index = start + 1;
   let order = Number.parseInt(String(getAttr(listToken, 'start') ?? '1'), 10);
+  let separateNextItem = false;
 
   while (index < tokens.length) {
     const token = tokens[index];
@@ -492,13 +626,20 @@ function renderList(
       continue;
     }
 
-    const bullet = ordered ? `${order}. ` : '• ';
+    const bullet = ordered ? `${order}. ` : '- ';
     const continuation = repeat(' ', prefixWidth(bullet));
     const innerEnv = { ...env, width: Math.max(1, env.width - prefixWidth(bullet)) };
     const item = renderRange(tokens, innerEnv, index + 1, 'list_item_close');
 
-    if (out.length > 0) out.push(blankLine());
-    out.push(...indent(item.block, [span(bullet)], [span(continuation)]));
+    if (separateNextItem && out.length > 0) out.push(blankLine());
+    out.push(
+      ...indent(
+        item.block,
+        [span(bullet, ordered ? chalk.hex('#8ab4fa') : undefined)],
+        [span(continuation)],
+      ),
+    );
+    separateNextItem = item.block.length > 1;
 
     index = item.next;
     order += 1;

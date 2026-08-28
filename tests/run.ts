@@ -1,12 +1,12 @@
 import { AgentApp } from '@/agent/app';
-import type { ChoiceRequest, HistoryEntry } from '@/types';
+import type { ChoiceRequest, HistoryEntry, ToolHistoryEntry } from '@/types';
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { handleCliArgs } from '@/cli';
 import { createAgentStore } from '@/store';
 import { createToolRegistry } from '@/tools';
-import { runUserShell } from '@/agent/shell';
+import { BackgroundTerminalManager } from '@/agent/background-terminals';
 import { getEarlyStdinStream } from '@/agent/early-stdin';
 import { fallbackSearchMentionEntries } from '@/agent/mention-index';
 import { getLastAssistantResponse } from '@/agent/messages';
@@ -70,12 +70,16 @@ import {
 import { EntryKind } from '@/types';
 import { readClipboardImage } from '@/agent/clipboard-image';
 import { displayImageTokens } from '@/agent/image-tokens';
-import { resolveInputBinding } from '@/agent/keybinds';
+import { resolveInputBinding, splitInputEvents } from '@/agent/keybinds';
 import {
   applyConfigPickerState,
   createConfigPickerState,
 } from '@/agent/config-settings';
 import { renderConfigPicker } from '@/render/components/config-picker';
+import { renderHistoryEntry } from '@/render/components/entry';
+import { renderCommandActivity } from '@/render/components/tools/command-activity';
+import { renderTranscriptOverlay } from '@/render/components/transcript-overlay';
+import { renderMarkdown } from '@/render/markdown';
 import { createRenderContext, serializeBlock } from '@/render';
 import { createTheme } from '@/theme';
 import {
@@ -147,6 +151,25 @@ deepEqual(
   resolveInputBinding('\u001b[47;5u'),
   { type: 'toggleSideConversation' },
   'kitty ctrl+/ toggles the side conversation',
+);
+deepEqual(
+  resolveInputBinding(Buffer.from([0x14])),
+  { type: 'toggleTranscript' },
+  'ctrl+t opens the full transcript',
+);
+deepEqual(resolveInputBinding(Buffer.from([0x02])), { type: 'pageTranscript', delta: 1 }, 'ctrl+b pages up in the transcript');
+deepEqual(resolveInputBinding(Buffer.from([0x06])), { type: 'pageTranscript', delta: -1 }, 'ctrl+f pages down in the transcript');
+deepEqual(resolveInputBinding(Buffer.from([0x15])), { type: 'halfPageTranscript', delta: 1 }, 'ctrl+u moves up half a transcript page');
+deepEqual(resolveInputBinding(Buffer.from([0x04])), { type: 'halfPageTranscript', delta: -1 }, 'ctrl+d moves down half a transcript page');
+deepEqual(
+  splitInputEvents('\u001b[A\u001b[A\u001b[B'),
+  { events: ['\u001b[A', '\u001b[A', '\u001b[B'], remainder: '' },
+  'coalesced alternate-scroll arrows remain separate input events',
+);
+deepEqual(
+  splitInputEvents('\u001b['),
+  { events: [], remainder: '\u001b[' },
+  'an incomplete terminal key sequence waits for the next stdin chunk',
 );
 
 const clipboardPng = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
@@ -286,7 +309,7 @@ try {
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'compact', 'copy', 'resume', 'fork', 'btw', 'rename', 'delete', 'exit'],
+  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'compact', 'copy', 'ps', 'stop', 'resume', 'fork', 'btw', 'rename', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
@@ -436,7 +459,7 @@ await statusCommand.execute(
   {
     store: createAgentStore(),
     getActiveToolSummaries: () => [
-      { names: ['shell'], description: null },
+      { names: ['exec_command', 'write_stdin'], description: null },
       { names: ['apply_patch'], description: null },
     ],
     getSessionId: () => 'session-test',
@@ -450,12 +473,57 @@ await statusCommand.execute(
 check(statusEntries.length === 1 && statusEntries[0]?.type === 'plain', '/status prints one block');
 if (statusEntries[0]?.type === 'plain') {
   check(statusEntries[0].text.includes('gpt-5.6-sol'), '/status reports the model');
-  check(statusEntries[0].text.includes('shell, apply_patch'), '/status reports active tools');
+  check(statusEntries[0].text.includes('exec_command, write_stdin, apply_patch'), '/status reports active tools');
   check(statusEntries[0].text.includes('session-test'), '/status reports the session ID');
   check(statusEntries[0].text.includes('request-test'), '/status reports the request ID');
   check(statusEntries[0].text.includes('workspace-write'), '/status reports the sandbox mode');
   check(statusEntries[0].text.includes('on-request'), '/status reports the approval policy');
 }
+
+const psEntries: HistoryEntry[] = [];
+const psCommand = builtinSlashCommands.find(command => command.name === 'ps');
+check(psCommand !== undefined, '/ps is registered');
+await psCommand.execute(
+  {
+    listBackgroundTerminals: () => [
+      {
+        sessionId: 7,
+        command: 'printf ready; sleep 10',
+        recentChunks: ['ready'],
+      },
+    ],
+    persistEntries: (entries: HistoryEntry[]) => psEntries.push(...entries),
+  } as unknown as SlashCommandContext,
+  { raw: '/ps', invocation: 'ps', argsText: '', argv: [] },
+);
+const renderedPs = serializeBlock(
+  renderHistoryEntry(psEntries[0]!, createRenderContext(createTheme(), false, 80, 30)),
+).join('\n');
+check(
+  renderedPs.includes('/ps\n\n Background terminals\n\n   • printf ready; sleep 10\n     ↳ ready'),
+  '/ps renders the Codex background-terminal history cell',
+);
+
+let stoppedBackgroundTerminals = 0;
+const stopEntries: HistoryEntry[] = [];
+const stopCommand = builtinSlashCommands.find(command => command.name === 'stop');
+check(stopCommand !== undefined, '/stop is registered');
+await stopCommand.execute(
+  {
+    stopBackgroundTerminals: () => {
+      stoppedBackgroundTerminals += 1;
+      return 1;
+    },
+    persistEntries: (entries: HistoryEntry[]) => stopEntries.push(...entries),
+  } as unknown as SlashCommandContext,
+  { raw: '/stop', invocation: 'stop', argsText: '', argv: [] },
+);
+equal(stoppedBackgroundTerminals, 1, '/stop terminates background terminals');
+check(
+  stopEntries[0]?.type === 'entry' &&
+    stopEntries[0].text === 'Stopping all background terminals.',
+  '/stop appends the Codex confirmation to history',
+);
 
 let copiedResponse = '';
 const copyCommand = builtinSlashCommands.find(command => command.name === 'copy');
@@ -476,7 +544,7 @@ equal(
     { role: 'assistant', content: '<summary>compacted history</summary>' },
     { role: 'user', content: 'do the work' },
     { role: 'assistant', content: 'I am checking this now.' },
-    { role: 'tool-call', callId: 'call-1', name: 'shell', input: {} },
+    { role: 'tool-call', callId: 'call-1', name: 'exec_command', input: {} },
     { role: 'tool-result', callId: 'call-1', output: 'done' },
     { role: 'assistant', content: 'The final answer.' },
   ]),
@@ -526,6 +594,110 @@ deepEqual(
   'the stream pump flushes the final incomplete block exactly once',
 );
 streamPump.dispose();
+
+const renderContext = createRenderContext(createTheme(), false, 80, 30);
+const renderedMarkdown = serializeBlock(
+  renderMarkdown(
+    [
+      '# Heading',
+      '',
+      'Text with **bold** and `inline code`.',
+      '',
+      '- first',
+      '- second',
+      '',
+      '> quoted',
+      '',
+      '```ts',
+      'const answer = 42;',
+      '```',
+      '',
+      '| Name | Result |',
+      '| --- | ---: |',
+      '| Yet | ready |',
+    ].join('\n'),
+    renderContext,
+    76,
+  ),
+).join('\n');
+check(
+  renderedMarkdown.includes(
+    '# Heading\n\nText with bold and inline code.\n\n- first\n- second\n\n> quoted\n\nconst answer = 42;',
+  ),
+  'Markdown uses Codex heading, list, quote, inline-code, and code-block layout',
+);
+check(
+  renderedMarkdown.includes('Name') &&
+    renderedMarkdown.includes('Result') &&
+    renderedMarkdown.includes('━━━━'),
+  'Markdown tables use the Codex column and header-separator layout',
+);
+
+const commandHistory: ToolHistoryEntry[] = [
+  {
+    type: 'tool',
+    toolCallId: 'command-1',
+    toolName: 'exec_command',
+    input: { cmd: 'printf first' },
+    output: JSON.stringify({ output: 'first', exit_code: 0, wall_time_seconds: 0.01 }),
+    status: 'completed',
+  },
+  {
+    type: 'tool',
+    toolCallId: 'command-2',
+    toolName: 'exec_command',
+    input: { cmd: 'printf second' },
+    output: JSON.stringify({ output: 'second', exit_code: 0, wall_time_seconds: 0.02 }),
+    status: 'completed',
+  },
+];
+equal(
+  serializeBlock(renderCommandActivity(commandHistory, renderContext)).join('\n'),
+  ' • Ran 2 commands · ctrl + t to view transcript',
+  'completed command groups collapse to the Codex transcript summary',
+);
+const renderedWait = serializeBlock(
+  renderCommandActivity(
+    [
+      {
+        type: 'tool',
+        toolCallId: 'wait-1',
+        toolName: 'write_stdin',
+        input: { session_id: 7 },
+        output: JSON.stringify({ output: 'done', exit_code: 0 }),
+        status: 'completed',
+        title: 'printf ready; sleep 10',
+      },
+    ],
+    renderContext,
+  ),
+).join('\n');
+equal(
+  renderedWait,
+  ' • Waited for background terminal · printf ready; sleep 10',
+  'background polling uses the Codex waited-for-terminal history cell',
+);
+const renderedTranscript = serializeBlock(
+  renderTranscriptOverlay(commandHistory, { reasoning: '', assistant: '' }, 0, renderContext).block,
+).join('\n');
+check(
+  renderedTranscript.startsWith('/ T R A N S C R I P T / /') &&
+    renderedTranscript.includes(' $ printf first\n first\n ✓') &&
+    renderedTranscript.includes(' $ printf second\n second\n ✓') &&
+    renderedTranscript.includes('q to quit   esc to edit prev'),
+  'ctrl+t transcript shows full command output in the Codex pager layout',
+);
+const assistantMarkdown = serializeBlock(
+  renderHistoryEntry(
+    { type: 'entry', kind: EntryKind.Assistant, text: '**Implemented.** `ready`' },
+    renderContext,
+  ),
+).join('\n');
+equal(
+  assistantMarkdown,
+  ' • Implemented. ready',
+  'assistant Markdown uses the Codex response bullet and indentation',
+);
 
 check(isPotentiallyUnsafeCommand('rm -rf build'), 'recursive delete is unsafe');
 check(isPotentiallyUnsafeCommand('curl https://example.com'), 'network command is unsafe');
@@ -628,18 +800,20 @@ try {
 
   const recorded: string[] = [];
   let planningMode = false;
+  const terminalManager = new BackgroundTerminalManager();
   const registry = createToolRegistry({
     workspaceRoot: workspace,
     getPermissionMode: () => 'ask',
     getPlanningMode: () => planningMode,
     getThinkingMode: () => 'auto',
     authorize: async () => true,
-    runUserShell,
+    execCommand: (command, options) => terminalManager.exec(command, options),
+    writeStdin: (sessionId, chars, options) => terminalManager.write(sessionId, chars, options),
     recordFileMutations: files => recorded.push(...files.map(file => file.path)),
   });
   deepEqual(
     registry.list().map(tool => tool.name),
-    ['shell', 'apply_patch'],
+    ['exec_command', 'write_stdin', 'apply_patch'],
     'default tool list is exact',
   );
 
@@ -664,18 +838,41 @@ try {
     'apply_patch rejects protected workspace metadata',
   );
   await mkdir(join(workspace, '.git'));
-  const metadataWrite = await registry.execute('shell', {
-    command: 'printf denied > .git/config',
+  const metadataWrite = await registry.execute('exec_command', {
+    cmd: 'printf denied > .git/config',
   });
-  check(metadataWrite.output.includes('exit code: 1'), 'sandbox denies writes to git metadata');
-  const shell = await registry.execute('shell', { command: 'printf sandbox-ok' });
-  check(shell.output.includes('sandbox-ok'), 'shell runs in the workspace sandbox');
-  check(!shell.output.includes('Operation not permitted'), 'shell skips mutating login startup files');
+  check(metadataWrite.output.includes('"exit_code":1'), 'sandbox denies writes to git metadata');
+  const shell = await registry.execute('exec_command', { cmd: 'printf sandbox-ok' });
+  check(shell.output.includes('sandbox-ok'), 'exec command runs in the workspace sandbox');
+  check(!shell.output.includes('Operation not permitted'), 'exec command skips mutating login startup files');
   check(!shell.output.includes('process exited with signal 0'), 'normal exit is not reported as a signal');
-  const listed = await registry.execute('shell', { command: 'ls' });
+  const listed = await registry.execute('exec_command', { cmd: 'ls' });
   check(listed.output.includes('hello.txt'), 'sandboxed ls reads the workspace');
   check(!listed.output.includes('Operation not permitted'), 'sandboxed ls has no startup noise');
   check(!listed.output.includes('process exited with signal 0'), 'sandboxed ls has a clean exit');
+
+  const yielded = await registry.execute('exec_command', {
+    cmd: 'printf ready; sleep 0.5; printf done',
+    yield_time_ms: 250,
+  });
+  const yieldedResult = JSON.parse(yielded.output) as {
+    output: string;
+    session_id?: number;
+  };
+  check(yieldedResult.output.includes('ready'), 'long commands yield their initial PTY output');
+  check(typeof yieldedResult.session_id === 'number', 'long commands yield a background session ID');
+  equal(terminalManager.list().length, 1, 'yielded commands appear in /ps state');
+  const completed = await registry.execute('write_stdin', {
+    session_id: yieldedResult.session_id,
+    yield_time_ms: 3_000,
+  });
+  const completedResult = JSON.parse(completed.output) as {
+    output: string;
+    exit_code?: number;
+  };
+  check(completedResult.output.includes('done'), 'write_stdin returns unread background output');
+  equal(completedResult.exit_code, 0, 'write_stdin reports the background command exit code');
+  equal(terminalManager.list().length, 0, 'completed commands leave /ps state');
 
   if (process.platform === 'darwin' && existsSync('/usr/bin/nc')) {
     const server = createServer(socket => socket.end());
@@ -686,10 +883,10 @@ try {
     try {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('test server has no TCP port');
-      const networkAttempt = await registry.execute('shell', {
-        command: `/usr/bin/nc -z 127.0.0.1 ${address.port}`,
+      const networkAttempt = await registry.execute('exec_command', {
+        cmd: `/usr/bin/nc -z 127.0.0.1 ${address.port}`,
       });
-      check(networkAttempt.output.includes('exit code: 1'), 'sandbox denies local TCP access');
+      check(networkAttempt.output.includes('"exit_code":1'), 'sandbox denies local TCP access');
     } finally {
       await new Promise<void>((resolveClose, rejectClose) => {
         server.close(error => (error ? rejectClose(error) : resolveClose()));
@@ -700,23 +897,23 @@ try {
   planningMode = true;
   deepEqual(
     registry.list().map(tool => tool.name),
-    ['shell'],
-    'planning mode exposes only shell',
+    ['exec_command', 'write_stdin'],
+    'planning mode exposes only command tools',
   );
   await rejects(registry.execute('apply_patch', { patch }), /unavailable in planning mode/, 'planning mode disables apply_patch');
   await rejects(
-    registry.execute('shell', {
-      command: 'printf nope',
+    registry.execute('exec_command', {
+      cmd: 'printf nope',
       permissions: 'elevated',
       justification: 'test',
     }),
     /unavailable in planning mode/,
     'planning mode rejects elevated shell execution',
   );
-  const planningWrite = await registry.execute('shell', {
-    command: 'printf cannot-write > planning-write.txt',
+  const planningWrite = await registry.execute('exec_command', {
+    cmd: 'printf cannot-write > planning-write.txt',
   });
-  check(planningWrite.output.includes('exit code: 1'), 'planning shell denies file writes');
+  check(planningWrite.output.includes('"exit_code":1'), 'planning command denies file writes');
   let planningWriteExists = true;
   try {
     await readFile(join(workspace, 'planning-write.txt'));
@@ -898,8 +1095,8 @@ try {
       entry: {
         type: 'tool',
         toolCallId: 'tool-1',
-        toolName: 'shell',
-        input: { command: 'pwd' },
+        toolName: 'exec_command',
+        input: { cmd: 'pwd' },
         status: 'running',
       },
     },
@@ -910,8 +1107,8 @@ try {
       entry: {
         type: 'tool',
         toolCallId: 'tool-1',
-        toolName: 'shell',
-        input: { command: 'pwd' },
+        toolName: 'exec_command',
+        input: { cmd: 'pwd' },
         output: sessionHome,
         status: 'completed',
       },
@@ -1173,15 +1370,15 @@ try {
       entry: {
         type: 'tool',
         toolCallId: 'interrupted-tool',
-        toolName: 'shell',
-        input: { command: 'sleep 1' },
+        toolName: 'exec_command',
+        input: { cmd: 'sleep 1' },
         status: 'running',
       },
       message: {
         role: 'tool-call',
         callId: 'interrupted-tool',
-        name: 'shell',
-        input: { command: 'sleep 1' },
+        name: 'exec_command',
+        input: { cmd: 'sleep 1' },
       },
     },
   });

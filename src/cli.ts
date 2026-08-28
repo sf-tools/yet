@@ -90,6 +90,8 @@ function printHelp() {
       ['/plan', 'Toggle read-only planning mode or plan one task'],
       ['/compact', 'Compact the current conversation'],
       ['/copy', "Copy the agent's latest response to the clipboard"],
+      ['/ps', 'List background terminals'],
+      ['/stop', 'Stop all background terminals'],
       ['/resume', 'Resume another saved workspace session'],
       ['/fork [name]', 'Fork the current chat'],
       ['/btw [question]', 'Start an ephemeral side conversation'],
@@ -103,7 +105,7 @@ function printHelp() {
     '',
     formatRows([
       ['OPENAI_API_KEY', 'Required for model requests'],
-      ['SHELL', 'Shell used by the shell tool (default: /bin/sh)'],
+      ['SHELL', 'Shell used for command execution (default: /bin/sh)'],
     ]),
     '',
   ];

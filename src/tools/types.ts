@@ -1,7 +1,10 @@
-import type { ShellExecutionOptions } from '@/agent/shell';
+import type {
+  BackgroundTerminalExecOptions,
+  BackgroundTerminalResult,
+} from '@/agent/background-terminals';
 import type { ThinkingMode } from '@/config';
 import type { PermissionMode, ToolPermission } from '@/permissions';
-import type { ApprovalRequest, FileChange, ShellResult } from '@/types';
+import type { ApprovalRequest, FileChange } from '@/types';
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -34,7 +37,15 @@ export type ToolFactoryOptions = {
   getPlanningMode: () => boolean;
   getThinkingMode: () => ThinkingMode;
   authorize: (request: ApprovalRequest, authorization: ToolAuthorization) => Promise<boolean>;
-  runUserShell: (command: string, options: ShellExecutionOptions) => Promise<ShellResult>;
+  execCommand: (
+    command: string,
+    options: BackgroundTerminalExecOptions,
+  ) => Promise<BackgroundTerminalResult>;
+  writeStdin: (
+    sessionId: number,
+    chars?: string,
+    options?: { yieldTimeMs?: number; maxOutputTokens?: number },
+  ) => Promise<BackgroundTerminalResult>;
   recordFileMutations: (files: FileMutation[]) => void;
 };
 

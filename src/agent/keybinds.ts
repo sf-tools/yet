@@ -5,8 +5,10 @@ export type InputBinding =
   | { type: 'pasteImage' }
   | { type: 'escape' }
   | { type: 'toggleSideConversation' }
+  | { type: 'toggleTranscript' }
   | { type: 'toggleThinkingMode' }
-  | { type: 'togglePreviews' }
+  | { type: 'pageTranscript'; delta: number }
+  | { type: 'halfPageTranscript'; delta: number }
   | { type: 'acceptSuggestion' }
   | { type: 'editQueuedSubmission'; fallback: 'up' | 'left' }
   | { type: 'submit' }
@@ -62,7 +64,14 @@ export function resolveInputBinding(data: Buffer | string): InputBinding | null 
   if (keypress.name === 'escape') return { type: 'escape' };
   if (keypress.sequence === '\u001f' || (input === '/' && keypress.ctrl))
     return { type: 'toggleSideConversation' };
-  if (input === 'o' && keypress.ctrl) return { type: 'togglePreviews' };
+  if (input === 't' && keypress.ctrl) return { type: 'toggleTranscript' };
+  if (input === 'b' && keypress.ctrl) return { type: 'pageTranscript', delta: 1 };
+  if (input === 'f' && keypress.ctrl) return { type: 'pageTranscript', delta: -1 };
+  if (input === 'u' && keypress.ctrl) return { type: 'halfPageTranscript', delta: 1 };
+  if (input === 'd' && keypress.ctrl) return { type: 'halfPageTranscript', delta: -1 };
+  if (keypress.name === 'pageup') return { type: 'pageTranscript', delta: 1 };
+  if (keypress.name === 'pagedown') return { type: 'pageTranscript', delta: -1 };
+  if (keypress.name === 'space' && keypress.shift) return { type: 'pageTranscript', delta: 1 };
   if (keypress.name === 'tab' && keypress.shift) return { type: 'toggleThinkingMode' };
   if (keypress.name === 'tab') return { type: 'acceptSuggestion' };
   if (keypress.name === 'return') return { type: 'submit' };
@@ -81,4 +90,53 @@ export function resolveInputBinding(data: Buffer | string): InputBinding | null 
   if (!keypress.ctrl && !keypress.meta && input) return { type: 'insertText', text: input };
 
   return null;
+}
+
+export function splitInputEvents(text: string): { events: string[]; remainder: string } {
+  const events: string[] = [];
+  let offset = 0;
+
+  while (offset < text.length) {
+    const code = text.charCodeAt(offset);
+
+    if (code === 0x1b) {
+      if (offset + 1 >= text.length) break;
+
+      const introducer = text[offset + 1];
+      if (introducer === '[' || introducer === 'O' || introducer === 'N') {
+        let end = offset + 2;
+        if (introducer === '[' && text[end] === '[') end += 1;
+        while (end < text.length) {
+          const finalCode = text.charCodeAt(end);
+          if (finalCode >= 0x40 && finalCode <= 0x7e) break;
+          end += 1;
+        }
+        if (end >= text.length) break;
+        events.push(text.slice(offset, end + 1));
+        offset = end + 1;
+        continue;
+      }
+
+      events.push(text.slice(offset, offset + 2));
+      offset += 2;
+      continue;
+    }
+
+    if (code < 0x20 || code === 0x7f) {
+      events.push(text[offset]);
+      offset += 1;
+      continue;
+    }
+
+    let end = offset + 1;
+    while (end < text.length) {
+      const nextCode = text.charCodeAt(end);
+      if (nextCode === 0x1b || nextCode < 0x20 || nextCode === 0x7f) break;
+      end += 1;
+    }
+    events.push(text.slice(offset, end));
+    offset = end;
+  }
+
+  return { events, remainder: text.slice(offset) };
 }

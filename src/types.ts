@@ -54,12 +54,22 @@ export type ResumeHintHistoryEntry = {
   command: string;
 };
 
+export type BackgroundProcessesHistoryEntry = {
+  type: 'background_processes';
+  processes: Array<{
+    sessionId: number;
+    command: string;
+    recentChunks: string[];
+  }>;
+};
+
 export type HistoryEntry =
   | { type: 'entry'; kind: EntryKind; text: string }
   | { type: 'plain'; text: string }
   | { type: 'ansi'; text: string }
   | ForkedHistoryEntry
   | ResumeHintHistoryEntry
+  | BackgroundProcessesHistoryEntry
   | CompactedHistoryEntry
   | ToolHistoryEntry;
 

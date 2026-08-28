@@ -13,6 +13,8 @@ import { renameSlashCommand } from './rename';
 import { resumeSlashCommand } from './resume';
 import { statusSlashCommand } from './status';
 import { btwSlashCommand } from './btw';
+import { psSlashCommand } from './ps';
+import { stopSlashCommand } from './stop';
 
 export const builtinSlashCommands = [
   statusSlashCommand,
@@ -24,6 +26,8 @@ export const builtinSlashCommands = [
   planningSlashCommand,
   compactSlashCommand,
   copySlashCommand,
+  psSlashCommand,
+  stopSlashCommand,
   resumeSlashCommand,
   forkSlashCommand,
   btwSlashCommand,

@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 
 import { EntryKind, type HistoryEntry } from '@/types';
-import { widthOf } from '@/text';
+import { truncateToWidth, widthOf } from '@/text';
 import { LEFT_MARGIN, indent, thinPanelize, wrapTextBlock } from '../layout';
 import { renderMarkdown } from '../markdown';
 import { blankLine, line, rawBlock, span } from '../primitives';
@@ -161,13 +161,23 @@ function styleBlock(block: Block, style: Style): Block {
 }
 
 function renderAssistantEntry(text: string, ctx: RenderContext, animate = false): Block {
-  if (animate) return indent(renderAssistantLines(text, ctx, true), LEFT_MARGIN);
-  return indent(renderMarkdown(text, ctx, Math.max(1, ctx.width - 2)), LEFT_MARGIN);
+  const block = animate
+    ? renderAssistantLines(text, ctx, true)
+    : renderMarkdown(text, ctx, Math.max(1, ctx.width - 3));
+  return indent(
+    block,
+    [span(LEFT_MARGIN), span('• ', ctx.theme.dimmed)],
+    `${LEFT_MARGIN}  `,
+  );
 }
 
 function renderReasoningEntry(text: string, ctx: RenderContext): Block {
   const style = (value: string) => chalk.italic(ctx.theme.dimmed(value));
-  return indent(styleBlock(renderMarkdown(text, ctx, Math.max(1, ctx.width - 2)), style), LEFT_MARGIN);
+  return indent(
+    styleBlock(renderMarkdown(text, ctx, Math.max(1, ctx.width - 3)), style),
+    [span(LEFT_MARGIN), span('• ', ctx.theme.dimmed)],
+    `${LEFT_MARGIN}  `,
+  );
 }
 
 function renderShellEntry(text: string, ctx: RenderContext): Block {
@@ -258,6 +268,69 @@ function renderResumeHintEntry(
   ];
 }
 
+function renderBackgroundProcessesEntry(
+  entry: Extract<HistoryEntry, { type: 'background_processes' }>,
+  ctx: RenderContext,
+): Block {
+  const block: Block = [
+    line(span(LEFT_MARGIN), span('/ps', chalk.magentaBright)),
+    blankLine(),
+    line(span(LEFT_MARGIN), span('Background terminals', chalk.bold)),
+    blankLine(),
+  ];
+
+  if (entry.processes.length === 0) {
+    block.push(
+      line(
+        span(LEFT_MARGIN),
+        span('  • ', ctx.theme.dimmed),
+        span('No background terminals running.', chalk.italic),
+      ),
+    );
+    return block;
+  }
+
+  const maxProcesses = 16;
+  const available = Math.max(1, ctx.width - widthOf(LEFT_MARGIN) - 4);
+  for (const process of entry.processes.slice(0, maxProcesses)) {
+    const firstLine = process.command.split('\n')[0] ?? '';
+    const commandTruncated = process.command.includes('\n') || widthOf(firstLine) > available;
+    const suffix = commandTruncated ? ' [...]' : '';
+    const command = truncateToWidth(firstLine, Math.max(1, available - widthOf(suffix)));
+    block.push(
+      line(
+        span(LEFT_MARGIN),
+        span('  • ', ctx.theme.dimmed),
+        span(command, chalk.cyanBright),
+        ...(suffix ? [span(suffix, ctx.theme.dimmed)] : []),
+      ),
+    );
+
+    process.recentChunks.forEach((chunk, index) => {
+      const prefix = index === 0 ? '    ↳ ' : '      ';
+      block.push(
+        line(
+          span(LEFT_MARGIN),
+          span(prefix, ctx.theme.dimmed),
+          span(truncateToWidth(chunk, Math.max(1, ctx.width - widthOf(LEFT_MARGIN) - widthOf(prefix))), ctx.theme.dimmed),
+        ),
+      );
+    });
+  }
+
+  const remaining = entry.processes.length - maxProcesses;
+  if (remaining > 0) {
+    block.push(
+      line(
+        span(LEFT_MARGIN),
+        span('  • ', ctx.theme.dimmed),
+        span(`... and ${remaining} more running`, ctx.theme.dimmed),
+      ),
+    );
+  }
+  return block;
+}
+
 function renderCompactedEntry(
   entry: Extract<HistoryEntry, { type: 'compacted' }>,
   ctx: RenderContext,
@@ -299,6 +372,7 @@ export function renderHistoryEntry(
   if (entry.type === 'compacted') return renderCompactedEntry(entry, ctx);
   if (entry.type === 'forked') return renderForkedEntry(entry, ctx);
   if (entry.type === 'resume_hint') return renderResumeHintEntry(entry, ctx);
+  if (entry.type === 'background_processes') return renderBackgroundProcessesEntry(entry, ctx);
   if (entry.type === 'ansi') return indent(rawBlock(entry.text), LEFT_MARGIN);
   if (entry.type === 'plain')
     return indent(wrapTextBlock(entry.text, Math.max(1, ctx.width)), LEFT_MARGIN);

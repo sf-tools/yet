@@ -1,18 +1,23 @@
 import { createApplyPatchTool } from './apply-patch';
-import { createShellTool } from './shell';
+import { createExecCommandTool } from './exec-command';
+import { createWriteStdinTool } from './write-stdin';
 import type { Tool, ToolFactoryOptions } from './types';
 
 export type ToolRegistry = ReturnType<typeof createToolRegistry>;
 export type { JsonSchema, Tool, ToolExecutionResult, ToolFactoryOptions } from './types';
 
 export function createToolRegistry(options: ToolFactoryOptions) {
-  const entries = [createShellTool(options), createApplyPatchTool(options)] as Tool[];
+  const entries = [
+    createExecCommandTool(options),
+    createWriteStdinTool(options),
+    createApplyPatchTool(options),
+  ] as Tool[];
   const tools = new Map(entries.map(tool => [tool.name, tool]));
 
   return {
     list() {
       return [...tools.values()].filter(
-        tool => !options.getPlanningMode() || tool.name === 'shell',
+        tool => !options.getPlanningMode() || ['exec_command', 'write_stdin'].includes(tool.name),
       );
     },
     get(name: string) {

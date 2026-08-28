@@ -25,7 +25,7 @@ export type RenderContext = {
   height: number;
   cwd: string;
   theme: ThemePalette;
-  expandPreviews: boolean;
+  transcriptMode: boolean;
 };
 
 export type ComposerRenderResult = {
