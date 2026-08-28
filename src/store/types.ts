@@ -7,6 +7,8 @@ import type {
   ConfigPickerState,
   FileChange,
   HistoryEntry,
+  TextPromptRequest,
+  ThreadGoal,
 } from '@/types';
 
 export type ComposerPasteRange = {
@@ -17,6 +19,8 @@ export type ComposerPasteRange = {
 export type QueuedSubmission = {
   text: string;
   planningMode?: boolean;
+  hidden?: boolean;
+  goalContinuation?: boolean;
 };
 
 export type SideConversationState = {
@@ -56,6 +60,7 @@ export type AgentState = {
   pendingApproval: ApprovalRequest | null;
   pendingChoice: ChoiceRequest | null;
   pendingChoiceIndex: number;
+  pendingTextPrompt: TextPromptRequest | null;
   configPicker: ConfigPickerState | null;
   footerNotice: string | null;
   sessionFileChanges: FileChange[];
@@ -65,4 +70,5 @@ export type AgentState = {
   showThinking: boolean;
   compacting: boolean;
   sideConversation: SideConversationState | null;
+  goal: ThreadGoal | null;
 };

@@ -4,7 +4,7 @@ import type {
 } from '@/agent/background-terminals';
 import type { ThinkingMode } from '@/config';
 import type { PermissionMode, ToolPermission } from '@/permissions';
-import type { ApprovalRequest, FileChange } from '@/types';
+import type { ApprovalRequest, FileChange, ThreadGoal } from '@/types';
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -47,6 +47,9 @@ export type ToolFactoryOptions = {
     options?: { yieldTimeMs?: number; maxOutputTokens?: number },
   ) => Promise<BackgroundTerminalResult>;
   recordFileMutations: (files: FileMutation[]) => void;
+  getGoal: () => ThreadGoal | null;
+  createGoal: (objective: string, tokenBudget?: number) => ThreadGoal;
+  updateGoal: (status: 'complete' | 'blocked') => ThreadGoal;
 };
 
 export function asObject(value: unknown, toolName: string): Record<string, unknown> {

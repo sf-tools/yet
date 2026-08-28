@@ -11,6 +11,7 @@ import { summarizeFileChanges } from '@/file-changes';
 import { widthOf } from '@/text';
 import { line, span } from '../primitives';
 import { LEFT_MARGIN } from '../layout';
+import { formatGoalElapsedSeconds, formatTokensCompact } from '@/agent/goals';
 
 import type { AgentState } from '@/store';
 import type { Block, RenderContext, Segment, StyledLine } from '../types';
@@ -66,6 +67,29 @@ function fileChangeSummarySegments(state: AgentState, ctx: RenderContext): Segme
     ...(summary.modified > 0 ? [span(' '), span(`~${summary.modified}`, chalk.yellowBright)] : []),
     ...(summary.removed > 0 ? [span(' '), span(`-${summary.removed}`, chalk.redBright)] : []),
   ];
+}
+
+function goalStatusSegments(state: AgentState): Segment[] {
+  const goal = state.goal;
+  if (!goal) return [];
+  const usage = goal.tokenBudget === undefined
+    ? formatGoalElapsedSeconds(goal.timeUsedSeconds)
+    : `${formatTokensCompact(goal.tokensUsed)} / ${formatTokensCompact(goal.tokenBudget)}`;
+  const label = (() => {
+    switch (goal.status) {
+      case 'active': return `Pursuing goal (${usage})`;
+      case 'paused': return 'Goal paused (/goal resume)';
+      case 'blocked': return 'Goal stalled (/goal resume)';
+      case 'usage_limited': return 'Goal hit usage limits (/goal resume)';
+      case 'budget_limited': return goal.tokenBudget === undefined
+        ? 'Goal abandoned'
+        : `Goal unmet (${formatTokensCompact(goal.tokensUsed)} / ${formatTokensCompact(goal.tokenBudget)} tokens)`;
+      case 'complete': return goal.tokenBudget === undefined
+        ? `Goal achieved (${formatGoalElapsedSeconds(goal.timeUsedSeconds)})`
+        : `Goal achieved (${formatTokensCompact(goal.tokensUsed)} tokens)`;
+    }
+  })();
+  return [span(label, chalk.magenta)];
 }
 
 function thinkingModeStyle(mode: AgentState['thinkingMode']) {
@@ -179,6 +203,9 @@ function buildNoticeLine(state: AgentState, ctx: RenderContext) {
 }
 
 export function renderFooter(state: AgentState, ctx: RenderContext): Block {
+  if (state.footerNotice === 'esc again to edit previous message') {
+    return [line(span(LEFT_MARGIN), span(state.footerNotice, ctx.theme.dimmed))];
+  }
   if (state.busy && state.inputChars.length > 0) {
     const contextLeft = state.sideConversation?.active
       ? 'Side from main thread · ctrl + / to switch · ctrl + c to close'
@@ -210,11 +237,14 @@ export function renderFooter(state: AgentState, ctx: RenderContext): Block {
       ? [span(' · ', ctx.theme.subtle), span('plan mode', chalk.magentaBright)]
       : []),
   ];
+  const goalSegments = goalStatusSegments(state);
   const rightSegments = state.sideConversation?.active
     ? [span('Side from main thread · ctrl + / to switch · ctrl + c to close', ctx.theme.dimmed)]
     : state.sideConversation
       ? [span('ctrl + / for side', ctx.theme.dimmed)]
-    : fileChangeSummarySegments(state, ctx);
+    : goalSegments.length > 0
+      ? goalSegments
+      : fileChangeSummarySegments(state, ctx);
   const width = Math.max(1, ctx.width);
   const combinedSegments = [
     ...locationSegments,

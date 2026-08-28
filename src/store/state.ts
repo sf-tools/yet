@@ -32,6 +32,7 @@ export const createInitialState = (): AgentState => ({
   pendingApproval: null,
   pendingChoice: null,
   pendingChoiceIndex: 0,
+  pendingTextPrompt: null,
   configPicker: null,
   footerNotice: null,
   sessionFileChanges: [],
@@ -41,4 +42,5 @@ export const createInitialState = (): AgentState => ({
   showThinking: false,
   compacting: false,
   sideConversation: null,
+  goal: null,
 });

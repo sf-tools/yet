@@ -2,6 +2,7 @@ import { createApplyPatchTool } from './apply-patch';
 import { createExecCommandTool } from './exec-command';
 import { createWriteStdinTool } from './write-stdin';
 import { createUpdatePlanTool } from './update-plan';
+import { createGoalTools } from './goals';
 import type { Tool, ToolFactoryOptions } from './types';
 
 export type ToolRegistry = ReturnType<typeof createToolRegistry>;
@@ -13,13 +14,14 @@ export function createToolRegistry(options: ToolFactoryOptions) {
     createWriteStdinTool(options),
     createUpdatePlanTool(),
     createApplyPatchTool(options),
+    ...createGoalTools(options),
   ] as Tool[];
   const tools = new Map(entries.map(tool => [tool.name, tool]));
 
   return {
     list() {
       return [...tools.values()].filter(
-        tool => !options.getPlanningMode() || ['exec_command', 'write_stdin'].includes(tool.name),
+        tool => !options.getPlanningMode() || tool.name !== 'apply_patch',
       );
     },
     get(name: string) {

@@ -67,7 +67,7 @@ export function renderStatusIndicator(
   backgroundTerminalCount = 0,
   now = Date.now(),
 ): Block {
-  if (!state.busy || state.pendingApproval || state.pendingChoice || state.configPicker) return [];
+  if (!state.busy || state.pendingApproval || state.pendingChoice || state.pendingTextPrompt || state.configPicker) return [];
 
   const elapsed = formatElapsedCompact(elapsedMs / 1_000);
   const waiting = Boolean(state.backgroundWaitCommand);

@@ -100,9 +100,18 @@ export function splitInputEvents(text: string): { events: string[]; remainder: s
     const code = text.charCodeAt(offset);
 
     if (code === 0x1b) {
-      if (offset + 1 >= text.length) break;
+      if (offset + 1 >= text.length) {
+        events.push(text[offset]);
+        offset += 1;
+        continue;
+      }
 
       const introducer = text[offset + 1];
+      if (introducer === '\u001b') {
+        events.push(text[offset]);
+        offset += 1;
+        continue;
+      }
       if (introducer === '[' || introducer === 'O' || introducer === 'N') {
         let end = offset + 2;
         if (introducer === '[' && text[end] === '[') end += 1;

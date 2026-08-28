@@ -23,6 +23,7 @@ You have these tools:
 - write_stdin: poll or interact with a background terminal returned by exec_command.
 - apply_patch: create, edit, or delete files with a unified diff.
 - update_plan: keep a visible task plan with pending, in-progress, and completed steps.
+- get_goal, create_goal, and update_goal: inspect and manage an explicitly requested long-running goal. Never infer a goal from an ordinary task.
 
 Tool rules:
 - Use plain JSON arguments that match each tool schema.

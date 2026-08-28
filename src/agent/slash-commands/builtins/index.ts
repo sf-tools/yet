@@ -15,6 +15,7 @@ import { statusSlashCommand } from './status';
 import { btwSlashCommand } from './btw';
 import { psSlashCommand } from './ps';
 import { stopSlashCommand } from './stop';
+import { goalSlashCommand } from './goal';
 
 export const builtinSlashCommands = [
   statusSlashCommand,
@@ -24,6 +25,7 @@ export const builtinSlashCommands = [
   permissionsSlashCommand,
   configSlashCommand,
   planningSlashCommand,
+  goalSlashCommand,
   compactSlashCommand,
   copySlashCommand,
   psSlashCommand,

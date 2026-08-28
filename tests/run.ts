@@ -1,5 +1,5 @@
 import { AgentApp } from '@/agent/app';
-import type { ChoiceRequest, HistoryEntry, ToolHistoryEntry } from '@/types';
+import type { ChoiceRequest, HistoryEntry, ThreadGoal, ToolHistoryEntry } from '@/types';
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -79,7 +79,7 @@ import { renderConfigPicker } from '@/render/components/config-picker';
 import { renderHistoryEntry } from '@/render/components/entry';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
 import { renderCommandActivity } from '@/render/components/tools/command-activity';
-import { renderTranscriptOverlay } from '@/render/components/transcript-overlay';
+import { renderTranscriptDocument, renderTranscriptOverlay, renderTranscriptViewport } from '@/render/components/transcript-overlay';
 import { renderMarkdown } from '@/render/markdown';
 import { createRenderContext, serializeBlock } from '@/render';
 import { createTheme } from '@/theme';
@@ -90,6 +90,7 @@ import {
   BlockStreamBuffer,
   BlockStreamPump,
 } from '@/agent/block-stream';
+import { formatGoalElapsedSeconds } from '@/agent/goals';
 
 function fail(error: unknown) {
   process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`);
@@ -310,10 +311,80 @@ try {
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'compact', 'copy', 'ps', 'stop', 'resume', 'fork', 'btw', 'rename', 'delete', 'exit'],
+  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'compact', 'copy', 'ps', 'stop', 'resume', 'fork', 'btw', 'rename', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
+
+deepEqual(splitInputEvents('\u001b\u001b').events, ['\u001b', '\u001b'], 'two Esc presses remain two input events');
+
+const goalStore = createAgentStore();
+const goalEntries: HistoryEntry[] = [];
+const goalCommand = builtinSlashCommands.find(command => command.name === 'goal');
+check(goalCommand !== undefined, '/goal is registered');
+const goalContext = {
+  store: goalStore,
+  getGoal: () => goalStore.getState().goal,
+  setGoal: (goal: ThreadGoal | null) => goalStore.setGoal(goal),
+  persistEntries: (entries: HistoryEntry[]) => goalEntries.push(...entries),
+  requestChoice: async () => ({ value: 'replace', label: 'Replace current goal', index: 0 }),
+  requestTextInput: async () => 'Edited durable goal',
+} as unknown as SlashCommandContext;
+await goalCommand.execute(goalContext, {
+  raw: '/goal Ship the durable feature',
+  invocation: 'goal',
+  argsText: 'Ship the durable feature',
+  argv: ['Ship', 'the', 'durable', 'feature'],
+});
+equal(goalStore.getState().goal?.objective, 'Ship the durable feature', '/goal creates an active durable goal');
+equal(goalStore.getState().goal?.status, 'active', 'new goals start active');
+goalEntries.length = 0;
+await goalCommand.execute(goalContext, { raw: '/goal', invocation: 'goal', argsText: '', argv: [] });
+check(goalEntries[0]?.type === 'goal_summary', 'bare /goal renders the persisted goal summary');
+equal(formatGoalElapsedSeconds(5_400), '1h 30m', 'goal time uses the Codex compact format');
+
+const separatorContext = createRenderContext(createTheme(), true, 80, 20);
+const shortSeparator = serializeBlock(
+  renderHistoryEntry({ type: 'separator', elapsedSeconds: 60 }, separatorContext),
+).join('\n');
+const longSeparator = serializeBlock(
+  renderHistoryEntry({ type: 'separator', elapsedSeconds: 61 }, separatorContext),
+).join('\n');
+check(!shortSeparator.includes('Worked for'), 'the work divider stays unlabeled through 60 seconds');
+check(longSeparator.includes('Worked for 1m 01s'), 'the work divider shows Codex elapsed time after 60 seconds');
+
+const rewindEntries: HistoryEntry[] = [
+  { type: 'entry', kind: EntryKind.User, text: 'first prompt', turn: { messageIndex: 1, prompt: 'first prompt' } },
+  { type: 'entry', kind: EntryKind.Assistant, text: 'first answer' },
+  { type: 'entry', kind: EntryKind.User, text: 'second prompt', turn: { messageIndex: 3, prompt: 'second prompt' } },
+];
+const rewindDocument = renderTranscriptDocument(
+  rewindEntries,
+  { reasoning: '', assistant: '' },
+  separatorContext,
+  { highlightHistoryIndex: 2 },
+);
+check(rewindDocument.entryRanges.has(2), 'transcript backtrack tracks the highlighted prompt rows');
+check(
+  serializeBlock(renderTranscriptViewport(rewindDocument.block, 0, separatorContext, { backtracking: true }).block)
+    .join('\n')
+    .includes('enter to edit message'),
+  'transcript backtrack shows the Codex edit navigation hints',
+);
+
+const rewindApp = new AgentApp({ initialState: createAgentStore().getState() });
+const rewindInternals = rewindApp as unknown as {
+  store: ReturnType<typeof createAgentStore>;
+  render(): void;
+  handleEscape(): void;
+  backtrackHistoryIndex: number | null;
+};
+rewindInternals.render = () => {};
+rewindInternals.store.pushHistoryEntry(rewindEntries[0]!);
+rewindInternals.handleEscape();
+equal(rewindInternals.store.getState().footerNotice, 'esc again to edit previous message', 'first Esc primes prompt editing');
+rewindInternals.handleEscape();
+equal(rewindInternals.backtrackHistoryIndex, 0, 'second Esc selects the latest prior prompt');
 
 let configPickerOpened = false;
 const configCommand = builtinSlashCommands.find(command => command.name === 'config');
@@ -377,6 +448,40 @@ await configAppInternals.handleInputBinding({ type: 'insertText', text: ' ' });
 await configAppInternals.handleInputBinding({ type: 'escape' });
 equal(configAppInternals.store.getState().configPicker, null, 'escape closes the configuration picker');
 await configAppInternals.activeSubmissionTask;
+
+const highlightedCommandApp = new AgentApp();
+const highlightedCommandInternals = highlightedCommandApp as unknown as {
+  store: ReturnType<typeof createAgentStore>;
+  render(): void;
+  tryAcceptAndSubmitSlashCommandSuggestion(): Promise<boolean>;
+  handleInputBinding(binding: ReturnType<typeof resolveInputBinding>): Promise<void>;
+  activeSubmissionTask: Promise<void> | null;
+};
+highlightedCommandInternals.render = () => {};
+highlightedCommandInternals.store.replaceInput('/co');
+highlightedCommandInternals.store.setSelectedSuggestion(1);
+check(
+  await highlightedCommandInternals.tryAcceptAndSubmitSlashCommandSuggestion(),
+  'enter accepts and runs the highlighted slash command when several commands match',
+);
+check(highlightedCommandInternals.store.getState().configPicker !== null, 'the highlighted /config command opens immediately');
+await highlightedCommandInternals.handleInputBinding({ type: 'escape' });
+await highlightedCommandInternals.activeSubmissionTask;
+
+const partialDeleteApp = new AgentApp();
+const partialDeleteInternals = partialDeleteApp as unknown as {
+  store: ReturnType<typeof createAgentStore>;
+  render(): void;
+  tryAcceptAndSubmitSlashCommandSuggestion(): Promise<boolean>;
+  handleInputBinding(binding: ReturnType<typeof resolveInputBinding>): Promise<void>;
+  activeSubmissionTask: Promise<void> | null;
+};
+partialDeleteInternals.render = () => {};
+partialDeleteInternals.store.replaceInput('/dele');
+await partialDeleteInternals.tryAcceptAndSubmitSlashCommandSuggestion();
+check(partialDeleteInternals.store.getState().pendingChoice !== null, 'the highlighted /delete command opens its confirmation immediately');
+await partialDeleteInternals.handleInputBinding({ type: 'escape' });
+await partialDeleteInternals.activeSubmissionTask;
 
 let forkName: string | undefined;
 const forkCommand = builtinSlashCommands.find(command => command.name === 'fork');
@@ -921,6 +1026,7 @@ try {
 
   const recorded: string[] = [];
   let planningMode = false;
+  let currentGoal: ThreadGoal | null = null;
   const terminalManager = new BackgroundTerminalManager();
   const registry = createToolRegistry({
     workspaceRoot: workspace,
@@ -931,10 +1037,29 @@ try {
     execCommand: (command, options) => terminalManager.exec(command, options),
     writeStdin: (sessionId, chars, options) => terminalManager.write(sessionId, chars, options),
     recordFileMutations: files => recorded.push(...files.map(file => file.path)),
+    getGoal: () => currentGoal,
+    createGoal: (objective, tokenBudget) => {
+      const now = Date.now();
+      currentGoal = {
+        objective,
+        status: 'active',
+        ...(tokenBudget === undefined ? {} : { tokenBudget }),
+        tokensUsed: 0,
+        timeUsedSeconds: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return currentGoal;
+    },
+    updateGoal: status => {
+      if (!currentGoal) throw new Error('missing goal');
+      currentGoal = { ...currentGoal, status, updatedAt: Date.now() };
+      return currentGoal;
+    },
   });
   deepEqual(
     registry.list().map(tool => tool.name),
-    ['exec_command', 'write_stdin', 'update_plan', 'apply_patch'],
+    ['exec_command', 'write_stdin', 'update_plan', 'apply_patch', 'get_goal', 'create_goal', 'update_goal'],
     'default tool list is exact',
   );
   equal(
@@ -944,6 +1069,16 @@ try {
     'Plan updated',
     'update_plan accepts a valid checklist',
   );
+  const createdGoal = JSON.parse((await registry.execute('create_goal', {
+    objective: 'Finish the registry tests',
+    token_budget: 10_000,
+  })).output) as { status?: string; remaining_tokens?: number };
+  equal(createdGoal.status, 'active', 'create_goal creates active harness goal state');
+  equal(createdGoal.remaining_tokens, 10_000, 'create_goal reports the remaining token budget');
+  const completedGoal = JSON.parse((await registry.execute('update_goal', {
+    status: 'complete',
+  })).output) as { status?: string };
+  equal(completedGoal.status, 'complete', 'update_goal records a terminal goal status');
   await rejects(
     registry.execute('update_plan', {
       plan: [
@@ -1035,8 +1170,8 @@ try {
   planningMode = true;
   deepEqual(
     registry.list().map(tool => tool.name),
-    ['exec_command', 'write_stdin'],
-    'planning mode exposes only command tools',
+    ['exec_command', 'write_stdin', 'update_plan', 'get_goal', 'create_goal', 'update_goal'],
+    'planning mode removes only the mutating file tool',
   );
   await rejects(registry.execute('apply_patch', { patch }), /unavailable in planning mode/, 'planning mode disables apply_patch');
   await rejects(
@@ -1212,6 +1347,15 @@ try {
   const contextStore = createAgentStore();
   contextStore.setCurrentModel('gpt-5.6-terra');
   contextStore.setThinkingMode('medium');
+  contextStore.setGoal({
+    objective: 'Keep the event session durable',
+    status: 'paused',
+    tokenBudget: 80_000,
+    tokensUsed: 12_500,
+    timeUsedSeconds: 60,
+    createdAt: 1,
+    updatedAt: 2,
+  });
   recorder.record({
     type: 'thread_name_updated',
     payload: { name: 'Durable events', source: 'provisional' },
@@ -1326,6 +1470,7 @@ try {
   check(loaded !== null, 'rollout session can be loaded');
   equal(loaded.name, 'Durable events', 'rollout restores the session title');
   equal(loaded.state.currentModel, 'gpt-5.6-terra', 'rollout restores the latest turn model');
+  equal(loaded.state.goal?.objective, 'Keep the event session durable', 'rollout restores durable goal state');
   deepEqual(loaded.state.messages, compactedMessages, 'compaction replaces replayed model context');
   check(
     loaded.state.historyEntries.some(entry => entry.type === 'compacted'),

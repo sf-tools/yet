@@ -19,6 +19,8 @@ function hasVisibleContent(entry: HistoryEntry) {
     entry.type === 'forked' ||
     entry.type === 'resume_hint' ||
     entry.type === 'background_processes'
+    || entry.type === 'separator'
+    || entry.type === 'goal_summary'
   ) return true;
   if (entry.type === 'plain' || entry.type === 'ansi') return entry.text.trim().length > 0;
   return entry.text.trim().length > 0;
@@ -182,6 +184,11 @@ function buildAgentStore(initialState: AgentState) {
       return state;
     },
 
+    setPendingTextPrompt(pendingTextPrompt: AgentState['pendingTextPrompt']) {
+      state.pendingTextPrompt = pendingTextPrompt;
+      return state;
+    },
+
     setConfigPicker(configPicker: AgentState['configPicker']) {
       state.configPicker = configPicker;
       return state;
@@ -254,6 +261,11 @@ function buildAgentStore(initialState: AgentState) {
 
     setSideConversation(sideConversation: AgentState['sideConversation']) {
       state.sideConversation = sideConversation;
+      return state;
+    },
+
+    setGoal(goal: AgentState['goal']) {
+      state.goal = goal;
       return state;
     },
 

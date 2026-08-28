@@ -37,6 +37,7 @@ export type PersistedSessionState = {
   autoCompactEnabled: boolean;
   planningMode: boolean;
   showThinking: boolean;
+  goal?: AgentState['goal'];
 };
 
 export type YetSessionListEntry = {
@@ -73,6 +74,7 @@ type TurnContextPayload = {
   autoCompactEnabled: boolean;
   planningMode: boolean;
   showThinking: boolean;
+  goal?: AgentState['goal'];
 };
 
 export type YetSessionEvent =
@@ -176,6 +178,7 @@ export function persistedStateFromAgentState(
     autoCompactEnabled: state.autoCompactEnabled,
     planningMode: state.planningMode,
     showThinking: state.showThinking,
+    goal: state.goal ? cloneJson(state.goal) : null,
   };
 }
 
@@ -224,6 +227,7 @@ export function hydratePersistedState(persisted: PersistedSessionState): AgentSt
     planningMode: persisted.planningMode,
     permissionMode: persisted.permissionMode ?? initial.permissionMode,
     showThinking: persisted.showThinking ?? initial.showThinking,
+    goal: persisted.goal ? cloneJson(persisted.goal) : null,
     thinkingMode: persisted.thinkingMode,
     totalCost: persisted.totalCost,
     sideConversation: null,
@@ -273,6 +277,7 @@ function applyEvent(state: AgentState, event: YetSessionEvent) {
       state.autoCompactEnabled = event.payload.autoCompactEnabled;
       state.planningMode = event.payload.planningMode;
       state.showThinking = event.payload.showThinking;
+      state.goal = event.payload.goal ? cloneJson(event.payload.goal) : null;
       break;
     case 'user_message':
     case 'assistant_message':
@@ -741,6 +746,7 @@ export function createTurnContextEvent(
       autoCompactEnabled: state.autoCompactEnabled,
       planningMode: state.planningMode,
       showThinking: state.showThinking,
+      goal: state.goal ? cloneJson(state.goal) : null,
     },
   };
 }

@@ -63,10 +63,36 @@ export type BackgroundProcessesHistoryEntry = {
   }>;
 };
 
+export type GoalStatus =
+  | 'active'
+  | 'paused'
+  | 'blocked'
+  | 'usage_limited'
+  | 'budget_limited'
+  | 'complete';
+
+export type ThreadGoal = {
+  objective: string;
+  status: GoalStatus;
+  tokenBudget?: number;
+  tokensUsed: number;
+  timeUsedSeconds: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type TurnBoundary = {
+  messageIndex: number;
+  prompt: string;
+  goal?: ThreadGoal | null;
+};
+
 export type HistoryEntry =
-  | { type: 'entry'; kind: EntryKind; text: string }
+  | { type: 'entry'; kind: EntryKind; text: string; turn?: TurnBoundary }
   | { type: 'plain'; text: string }
   | { type: 'ansi'; text: string }
+  | { type: 'separator'; elapsedSeconds: number }
+  | { type: 'goal_summary'; goal: ThreadGoal }
   | ForkedHistoryEntry
   | ResumeHintHistoryEntry
   | BackgroundProcessesHistoryEntry
@@ -111,6 +137,12 @@ export type ChoiceRequest = {
 
 export type ChoiceSelection = ChoiceOption & {
   index: number;
+};
+
+export type TextPromptRequest = {
+  title: string;
+  detail: string;
+  initialValue: string;
 };
 
 export type ConfigPickerItem = {

@@ -1,7 +1,7 @@
 import type { ThinkingMode } from '@/config';
 import type { PermissionMode } from '@/permissions';
 import type { AgentStore } from '@/store';
-import type { ChoiceRequest, ChoiceSelection, HistoryEntry } from '@/types';
+import type { ChoiceRequest, ChoiceSelection, HistoryEntry, TextPromptRequest, ThreadGoal } from '@/types';
 import type { BackgroundTerminalSummary } from '@/agent/background-terminals';
 
 export type SlashCommandArgs = {
@@ -27,6 +27,7 @@ export type SlashCommandContext = {
   openCommandArgumentPicker(commandName: string): void;
   openConfigPicker(): Promise<void>;
   requestChoice(request: ChoiceRequest): Promise<ChoiceSelection | null>;
+  requestTextInput(request: TextPromptRequest): Promise<string | null>;
   showFooterNotice(text: string, durationMs?: number): void;
   getActiveToolSummaries(): Array<{ names: string[]; description: string | null }>;
   getSessionId(): string;
@@ -41,6 +42,8 @@ export type SlashCommandContext = {
   stopBackgroundTerminals(): number;
   printEntries(entries: HistoryEntry[]): void;
   persistEntries(entries: HistoryEntry[]): void;
+  getGoal(): ThreadGoal | null;
+  setGoal(goal: ThreadGoal | null): void;
 };
 
 export type TextStyle = (text: string) => string;

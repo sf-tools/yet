@@ -213,6 +213,18 @@ export function createTheme() {
     fallbackHex: '#f2f2f2',
     fallbackAnsi256: 255,
   };
+  const cursorTranscriptSelectionDark = {
+    tintHex: '#b8b8c0',
+    mixRatio: 0.82,
+    fallbackHex: '#4c4c50',
+    fallbackAnsi256: 239,
+  };
+  const cursorTranscriptSelectionLight = {
+    tintHex: '#606068',
+    mixRatio: 0.82,
+    fallbackHex: '#c8c8cc',
+    fallbackAnsi256: 251,
+  };
 
   return {
     sync,
@@ -220,6 +232,11 @@ export function createTheme() {
       applyCursorTint(backgroundRgb, isLightTheme ? cursorPanelLight : cursorPanelDark),
     composerBg: () =>
       applyCursorTint(backgroundRgb, isLightTheme ? cursorComposerLight : cursorComposerDark),
+    transcriptSelectionBg: () =>
+      applyCursorTint(
+        backgroundRgb,
+        isLightTheme ? cursorTranscriptSelectionLight : cursorTranscriptSelectionDark,
+      ),
     foreground: (text: string) => text,
     dimmed: (text: string) => chalk.dim(text),
     subtle: (text: string) => chalk.dim(text),

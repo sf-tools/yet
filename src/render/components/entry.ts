@@ -1,7 +1,9 @@
 import chalk from 'chalk';
 
 import { EntryKind, type HistoryEntry } from '@/types';
-import { truncateToWidth, widthOf } from '@/text';
+import { formatGoalElapsedSeconds, formatTokensCompact, goalCommandHint, goalStatusLabel } from '@/agent/goals';
+import { formatElapsedCompact } from './status-indicator';
+import { repeat, truncateToWidth, widthOf } from '@/text';
 import { LEFT_MARGIN, indent, thinPanelize, wrapTextBlock } from '../layout';
 import { renderMarkdown } from '../markdown';
 import { blankLine, line, rawBlock, span } from '../primitives';
@@ -11,9 +13,10 @@ import type { Block, RenderContext, Style, StyledLine } from '../types';
 
 export type HistoryEntryRenderOptions = {
   animateAssistant?: boolean;
+  highlighted?: boolean;
 };
 
-function renderUserEntry(text: string, ctx: RenderContext): Block {
+function renderUserEntry(text: string, ctx: RenderContext, highlighted = false): Block {
   const width = Math.max(1, ctx.width - 2);
   const lines: StyledLine[] = [];
   let segments: StyledLine['segments'] = [];
@@ -52,9 +55,44 @@ function renderUserEntry(text: string, ctx: RenderContext): Block {
   flushLine(true);
 
   return thinPanelize(lines, {
-    bg: ctx.theme.panelBg(),
+    bg: highlighted ? ctx.theme.transcriptSelectionBg() : ctx.theme.panelBg(),
     width: ctx.width,
   });
+}
+
+function renderSeparatorEntry(
+  entry: Extract<HistoryEntry, { type: 'separator' }>,
+  ctx: RenderContext,
+): Block {
+  const label = entry.elapsedSeconds > 60
+    ? `─ Worked for ${formatElapsedCompact(entry.elapsedSeconds)} ─`
+    : '';
+  const rule = label
+    ? `${label}${repeat('─', Math.max(0, ctx.width - widthOf(label)))}`
+    : repeat('─', Math.max(1, ctx.width));
+  return [line(span(truncateToWidth(rule, ctx.width), ctx.theme.dimmed))];
+}
+
+function renderGoalSummary(
+  entry: Extract<HistoryEntry, { type: 'goal_summary' }>,
+  ctx: RenderContext,
+): Block {
+  const goal = entry.goal;
+  return indent(
+    [
+      line(span('Goal', chalk.bold)),
+      line(span('Status: ', ctx.theme.dimmed), span(goalStatusLabel(goal.status), ctx.theme.foreground)),
+      line(span('Objective: ', ctx.theme.dimmed), span(goal.objective, ctx.theme.foreground)),
+      line(span('Time used: ', ctx.theme.dimmed), span(formatGoalElapsedSeconds(goal.timeUsedSeconds), ctx.theme.foreground)),
+      line(span('Tokens used: ', ctx.theme.dimmed), span(formatTokensCompact(goal.tokensUsed), ctx.theme.foreground)),
+      ...(goal.tokenBudget === undefined
+        ? []
+        : [line(span('Token budget: ', ctx.theme.dimmed), span(formatTokensCompact(goal.tokenBudget), ctx.theme.foreground))]),
+      blankLine(),
+      line(span(goalCommandHint(goal.status), ctx.theme.dimmed)),
+    ],
+    LEFT_MARGIN,
+  );
 }
 
 const RAINBOW_PHRASE_PATTERN = /you'?re absolutely right/gi;
@@ -348,11 +386,15 @@ export function renderHistoryEntry(
   if (entry.type === 'forked') return renderForkedEntry(entry, ctx);
   if (entry.type === 'resume_hint') return renderResumeHintEntry(entry, ctx);
   if (entry.type === 'background_processes') return renderBackgroundProcessesEntry(entry, ctx);
+  if (entry.type === 'separator') return renderSeparatorEntry(entry, ctx);
+  if (entry.type === 'goal_summary') return renderGoalSummary(entry, ctx);
   if (entry.type === 'ansi') return indent(rawBlock(entry.text), LEFT_MARGIN);
   if (entry.type === 'plain')
     return indent(wrapTextBlock(entry.text, Math.max(1, ctx.width)), LEFT_MARGIN);
 
-  if (entry.kind === EntryKind.User) return renderUserEntry(entry.text, ctx);
+  if (entry.kind === EntryKind.User) {
+    return renderUserEntry(entry.text, ctx, options.highlighted);
+  }
   if (entry.kind === EntryKind.Assistant)
     return renderAssistantEntry(entry.text, ctx, options.animateAssistant);
   if (entry.kind === EntryKind.Reasoning) return renderReasoningEntry(entry.text, ctx);

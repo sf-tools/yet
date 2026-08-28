@@ -24,10 +24,8 @@ import { compactMessages, canCompactMessages } from './compact';
 import { renderSuggestions } from '@/render/components/suggestions';
 import { renderChoicePrompt, renderOutputPreview } from '@/render/components/transcript';
 import { renderConfigPicker } from '@/render/components/config-picker';
-import {
-  renderTranscriptContent,
-  renderTranscriptViewport,
-} from '@/render/components/transcript-overlay';
+import { renderTextPrompt } from '@/render/components/text-prompt';
+import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/components/transcript-overlay';
 import { renderPendingInput } from '@/render/components/pending-input';
 import { IMAGE_MEDIA_TYPES, parseDroppedImagePaths } from './path-detect';
 import { copyTextToClipboard } from './clipboard-text';
@@ -90,13 +88,17 @@ import {
   type FileChange,
   type HistoryEntry,
   type ToolHistoryEntry,
+  type TextPromptRequest,
+  type ThreadGoal,
 } from '@/types';
+import { buildGoalContinuationPrompt, createThreadGoal, isGoalUnfinished } from './goals';
 
 const RAINBOW_PHRASE_PATTERN = /you'?re absolutely right/i;
 const BRACKETED_PASTE_START = '\u001b[200~';
 const BRACKETED_PASTE_END = '\u001b[201~';
 const TRANSCRIPT_SCREEN_ENTER = '\u001b[?1049h\u001b[?1007h';
 const TRANSCRIPT_SCREEN_LEAVE = '\u001b[?1007l\u001b[?1049l';
+const BACKTRACK_FOOTER_HINT = 'esc again to edit previous message';
 
 function bracketedPasteSuffixLength(text: string) {
   const maxLength = Math.min(text.length, BRACKETED_PASTE_START.length - 1);
@@ -186,12 +188,16 @@ export class AgentApp {
   private lastRenderRows = 0;
   private transcriptOpen = false;
   private transcriptScrollOffset = 0;
+  private backtrackPrimed = false;
+  private backtrackHistoryIndex: number | null = null;
+  private backtrackScrollPending = false;
   private transcriptContentCache: {
     historyRevision: number;
     width: number;
     reasoning: string;
     assistant: string;
-    content: ReturnType<typeof renderTranscriptContent>;
+    highlightHistoryIndex: number | null;
+    document: ReturnType<typeof renderTranscriptDocument>;
   } | null = null;
   private backgroundWaitToolCallId: string | null = null;
   private readonly sessionFileBaselines = new Map<string, string | null>();
@@ -212,6 +218,9 @@ export class AgentApp {
         if (!this.sessionFileBaselines.has(file.path)) this.sessionFileBaselines.set(file.path, file.previousContent);
       }
     },
+    getGoal: () => this.state.goal,
+    createGoal: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
+    updateGoal: status => this.updateGoalFromTool(status),
   });
   private readonly slashCommands = createSlashCommandRegistry(builtinSlashCommands, {
     getSessionId: () => this.sessionId,
@@ -248,6 +257,7 @@ export class AgentApp {
   private preferredComposerColumn: number | null = null;
   private pendingApprovalResolver: ((decision: ApprovalDecision) => void) | null = null;
   private pendingChoiceResolver: ((selection: ChoiceSelection | null) => void) | null = null;
+  private pendingTextPromptResolver: ((value: string | null) => void) | null = null;
   private configPickerResolver: (() => void) | null = null;
   private stdin: TtyReadStream = process.stdin;
   private bracketedPasteActive = false;
@@ -430,7 +440,7 @@ export class AgentApp {
     );
     const pendingInput = renderPendingInput(
       this.state.pendingSteers,
-      this.state.queuedSubmissions,
+      this.state.queuedSubmissions.filter(submission => !submission.hidden),
       ctx,
     );
     const composer = renderComposer(
@@ -453,10 +463,13 @@ export class AgentApp {
     const configPicker = this.state.configPicker
       ? renderConfigPicker(this.state.configPicker, ctx)
       : null;
-    const suggestionLines = choicePrompt || configPicker
+    const textPrompt = this.state.pendingTextPrompt
+      ? renderTextPrompt(this.state.pendingTextPrompt, composer, ctx)
+      : null;
+    const suggestionLines = choicePrompt || configPicker || textPrompt
       ? []
       : renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
-    const footer = choicePrompt || configPicker || suggestionLines.length > 0
+    const footer = choicePrompt || configPicker || textPrompt || suggestionLines.length > 0
       ? []
       : renderFooter(this.state, ctx);
     const statusIndicator = renderStatusIndicator(
@@ -476,7 +489,7 @@ export class AgentApp {
           blankLine(),
         ]
       : [blankLine()];
-    const composerSurface = configPicker ?? choicePrompt ?? composer;
+    const composerSurface = textPrompt ?? configPicker ?? choicePrompt ?? composer;
     const blocks = body.length > 0
       ? [body, composerLead, composerSurface, suggestionLines, footer]
       : [composerLead, composerSurface, suggestionLines, footer];
@@ -576,6 +589,10 @@ export class AgentApp {
     this.render();
     for (const chunk of buffer) this.onStdinData(chunk);
     if (this.initialPrompt) this.startSubmissionTask(this.initialPrompt);
+    else if (this.state.goal?.status === 'active' && this.state.inputChars.length === 0) {
+      this.enqueueGoalContinuation();
+      void this.drainQueuedSubmissions();
+    }
   }
 
   private prepareShutdown() {
@@ -649,6 +666,7 @@ export class AgentApp {
   }
 
   private getSuggestions() {
+    if (this.state.pendingTextPrompt) return [];
     return listComposerSuggestions(this.state.inputChars, this.state.cursor, this.slashCommands, {
       currentModel: this.state.currentModel,
       thinkingMode: this.state.thinkingMode,
@@ -719,24 +737,42 @@ export class AgentApp {
         cached.historyRevision !== historyRevision ||
         cached.width !== columns ||
         cached.reasoning !== reasoning ||
-        cached.assistant !== assistant
+        cached.assistant !== assistant ||
+        cached.highlightHistoryIndex !== this.backtrackHistoryIndex
       ) {
         this.transcriptContentCache = {
           historyRevision,
           width: columns,
           reasoning,
           assistant,
-          content: renderTranscriptContent(
+          highlightHistoryIndex: this.backtrackHistoryIndex,
+          document: renderTranscriptDocument(
             this.state.historyEntries,
             { reasoning, assistant },
             ctx,
+            { highlightHistoryIndex: this.backtrackHistoryIndex },
           ),
         };
       }
+      if (this.backtrackScrollPending && this.backtrackHistoryIndex !== null) {
+        const contentHeight = Math.max(1, rows - 4);
+        const content = this.transcriptContentCache?.document.block ?? [];
+        const maxScroll = Math.max(0, content.length - contentHeight);
+        const range = this.transcriptContentCache?.document.entryRanges.get(this.backtrackHistoryIndex);
+        if (range) {
+          const desiredStart = Math.max(
+            0,
+            Math.min(maxScroll, range.start - Math.floor(Math.max(0, contentHeight - (range.end - range.start)) / 2)),
+          );
+          this.transcriptScrollOffset = maxScroll - desiredStart;
+        }
+        this.backtrackScrollPending = false;
+      }
       const rendered = renderTranscriptViewport(
-        this.transcriptContentCache?.content ?? [],
+        this.transcriptContentCache?.document.block ?? [],
         this.transcriptScrollOffset,
         ctx,
+        { backtracking: this.backtrackHistoryIndex !== null },
       );
       this.transcriptScrollOffset = Math.min(this.transcriptScrollOffset, rendered.maxScroll);
       process.stdout.write(`\u001b[2J\u001b[H${serializeBlock(rendered.block).join('\n')}`);
@@ -815,6 +851,76 @@ export class AgentApp {
 
   private recordTurnContext() {
     this.recordSessionEvent(createTurnContextEvent(this.state));
+  }
+
+  private removeQueuedGoalContinuations() {
+    this.store.update(state => {
+      state.queuedSubmissions = state.queuedSubmissions.filter(submission => !submission.goalContinuation);
+    });
+  }
+
+  private enqueueGoalContinuation() {
+    const goal = this.state.goal;
+    if (
+      !goal ||
+      goal.status !== 'active' ||
+      this.state.closed ||
+      this.sideConversationActive ||
+      this.state.queuedSubmissions.some(submission => submission.goalContinuation)
+    ) return;
+    this.store.enqueueSubmission({
+      text: buildGoalContinuationPrompt(goal),
+      hidden: true,
+      goalContinuation: true,
+    });
+  }
+
+  private setThreadGoal(goal: ThreadGoal | null, scheduleContinuation = true) {
+    this.store.setGoal(goal ? { ...goal } : null);
+    if (!goal || goal.status !== 'active') this.removeQueuedGoalContinuations();
+    else if (scheduleContinuation) this.enqueueGoalContinuation();
+    this.recordTurnContext();
+    this.render();
+  }
+
+  private createGoalFromTool(objective: string, tokenBudget?: number) {
+    const current = this.state.goal;
+    if (current && isGoalUnfinished(current))
+      throw new Error('an unfinished goal already exists');
+    const goal = createThreadGoal(objective, tokenBudget);
+    this.setThreadGoal(goal, false);
+    return goal;
+  }
+
+  private updateGoalFromTool(status: 'complete' | 'blocked') {
+    const current = this.state.goal;
+    if (!current) throw new Error('no goal is currently set');
+    const goal: ThreadGoal = { ...current, status, updatedAt: Date.now() };
+    this.setThreadGoal(goal, false);
+    return goal;
+  }
+
+  private accountGoalTurn(
+    goalCreatedAt: number | null,
+    elapsedSeconds: number,
+    tokensUsed: number,
+  ) {
+    const current = this.state.goal;
+    if (!current || current.createdAt !== goalCreatedAt) return;
+    const nextTokens = current.tokensUsed + Math.max(0, Math.floor(tokensUsed));
+    const goal: ThreadGoal = {
+      ...current,
+      tokensUsed: nextTokens,
+      timeUsedSeconds: current.timeUsedSeconds + Math.max(0, Math.floor(elapsedSeconds)),
+      status:
+        current.status === 'active' &&
+        current.tokenBudget !== undefined &&
+        nextTokens >= current.tokenBudget
+          ? 'budget_limited'
+          : current.status,
+      updatedAt: Date.now(),
+    };
+    this.setThreadGoal(goal, false);
   }
 
   private startThreadTitleGeneration(userMessage: string) {
@@ -953,6 +1059,112 @@ export class AgentApp {
     this.historyNavigationIndex = null;
     this.historyNavigationDraft = '';
     this.preferredComposerColumn = null;
+    this.store.replaceState(childState);
+    this.resetRenderedScreen();
+    this.render();
+  }
+
+  private fallbackMessageIndexForUser(historyIndex: number) {
+    const prompt = this.state.historyEntries[historyIndex];
+    if (prompt?.type !== 'entry' || prompt.kind !== EntryKind.User) return null;
+    const targetOrdinal = this.state.historyEntries
+      .slice(0, historyIndex + 1)
+      .filter(entry => entry.type === 'entry' && entry.kind === EntryKind.User)
+      .length - 1;
+    let ordinal = -1;
+    for (let index = 0; index < this.state.messages.length; index += 1) {
+      if (this.state.messages[index]?.role !== 'user') continue;
+      ordinal += 1;
+      if (ordinal === targetOrdinal) return index;
+    }
+    return null;
+  }
+
+  private async forkBeforePrompt(historyIndex: number) {
+    const entry = this.state.historyEntries[historyIndex];
+    if (entry?.type !== 'entry' || entry.kind !== EntryKind.User) return;
+    if (this.sideConversationActive) {
+      this.persistEntry(EntryKind.Error, 'Editing previous prompts is unavailable in side conversations.');
+      return;
+    }
+    if (!this.sessionRecorder) {
+      this.persistEntry(EntryKind.Error, 'Failed to branch before the selected prompt: session recorder is not available');
+      return;
+    }
+
+    const messageIndex = entry.turn?.messageIndex ?? this.fallbackMessageIndexForUser(historyIndex);
+    if (messageIndex === null) {
+      this.store.replaceInput(entry.turn?.prompt ?? entry.text);
+      this.persistEntry(EntryKind.Error, 'Failed to branch before the selected prompt: prompt boundary is unavailable');
+      return;
+    }
+
+    const parentSessionId = this.sessionId;
+    const parentTitle = this.threadTitle;
+    const forkPoint = this.sessionRecorder.lastOrdinal;
+    const childSessionId = randomUUID();
+    const childCreatedAt = new Date().toISOString();
+    const childState = cloneInactiveAgentState(this.state);
+    childState.messages = childState.messages.slice(0, messageIndex);
+    childState.historyEntries = childState.historyEntries.slice(0, historyIndex);
+    childState.goal = entry.turn?.goal === undefined
+      ? childState.goal
+      : entry.turn.goal
+        ? { ...entry.turn.goal }
+        : null;
+    childState.inputChars = Array.from(entry.turn?.prompt ?? entry.text);
+    childState.cursor = childState.inputChars.length;
+    childState.pasteRanges = [];
+    childState.queuedSubmissions = [];
+    childState.pendingSteers = [];
+    childState.footerNotice = null;
+
+    let childRecorder: SessionRecorder | null = null;
+    try {
+      await this.sessionRecorder.flush();
+      childRecorder = await SessionRecorder.open({
+        sessionId: childSessionId,
+        cwd: process.cwd(),
+        createdAt: childCreatedAt,
+        ...(parentTitle ? { title: parentTitle } : {}),
+        parentSessionId,
+        forkPoint,
+      });
+      childRecorder.record({
+        type: 'fork_snapshot',
+        payload: { state: persistedStateFromAgentState(childState, true) },
+      });
+      if (parentTitle) {
+        childRecorder.record({
+          type: 'thread_name_updated',
+          payload: { name: parentTitle, source: 'manual' },
+        });
+      }
+      await childRecorder.flush();
+      await this.sessionRecorder.close();
+    } catch (error) {
+      await childRecorder?.deleteSession().catch(() => {});
+      this.store.replaceInput(entry.turn?.prompt ?? entry.text);
+      this.persistEntry(
+        EntryKind.Error,
+        `Failed to branch before the selected prompt: ${plain(error instanceof Error ? error.message : String(error))}`,
+      );
+      return;
+    }
+
+    this.threadTitleRequest?.cancel();
+    this.threadTitleRequest = null;
+    this.sessionRecorder = childRecorder;
+    this.sessionId = childSessionId;
+    this.sessionRolloutPath = childRecorder.rolloutPath;
+    this.sessionCreatedAt = childCreatedAt;
+    this.sessionParentId = parentSessionId;
+    this.sessionForkPoint = forkPoint;
+    this.threadTitle = parentTitle;
+    this.lastRequestId = null;
+    this.clearHistoryNavigation();
+    this.resetPreferredComposerColumn();
+    this.sessionFileBaselines.clear();
     this.store.replaceState(childState);
     this.resetRenderedScreen();
     this.render();
@@ -1359,26 +1571,106 @@ export class AgentApp {
     this.render();
   }
 
-  private closeTranscript() {
+  private resetBacktrackState() {
+    this.backtrackPrimed = false;
+    this.backtrackHistoryIndex = null;
+    this.backtrackScrollPending = false;
+    if (this.state.footerNotice === BACKTRACK_FOOTER_HINT)
+      this.store.setFooterNotice(null);
+  }
+
+  private userHistoryIndices() {
+    return this.state.historyEntries.flatMap((entry, index) =>
+      entry.type === 'entry' && entry.kind === EntryKind.User ? [index] : [],
+    );
+  }
+
+  private beginBacktrackPreview() {
+    const indices = this.userHistoryIndices();
+    if (indices.length === 0) {
+      if (this.transcriptOpen) this.closeTranscript();
+      this.resetBacktrackState();
+      this.persistEntry(EntryKind.Meta, '• No previous message to edit.');
+      return;
+    }
+    if (this.sideConversationActive) {
+      this.resetBacktrackState();
+      this.persistEntry(
+        EntryKind.Error,
+        'Editing previous prompts is unavailable in side conversations.',
+      );
+      return;
+    }
+    if (!this.transcriptOpen) this.openTranscript();
+    this.backtrackPrimed = true;
+    this.backtrackHistoryIndex = indices.at(-1) ?? null;
+    this.backtrackScrollPending = true;
+    this.transcriptContentCache = null;
+    this.store.setFooterNotice(null);
+    this.render();
+  }
+
+  private stepBacktrack(delta: -1 | 1) {
+    const indices = this.userHistoryIndices();
+    if (indices.length === 0 || this.backtrackHistoryIndex === null) return;
+    const position = Math.max(0, indices.indexOf(this.backtrackHistoryIndex));
+    const next = Math.max(0, Math.min(indices.length - 1, position + delta));
+    this.backtrackHistoryIndex = indices[next] ?? this.backtrackHistoryIndex;
+    this.backtrackScrollPending = true;
+    this.transcriptContentCache = null;
+    this.scheduleRender();
+  }
+
+  private closeTranscript(resetBacktrack = true) {
     if (!this.transcriptOpen) return;
     this.transcriptOpen = false;
     this.transcriptScrollOffset = 0;
     this.transcriptContentCache = null;
     this.transientLineCount = 0;
     this.lastTransientLines = [];
+    if (resetBacktrack) this.resetBacktrackState();
     if (process.stdout.isTTY) process.stdout.write(TRANSCRIPT_SCREEN_LEAVE);
     this.render();
   }
 
   private handleTranscriptBinding(binding: ReturnType<typeof resolveInputBinding>) {
     if (!this.transcriptOpen || !binding) return false;
+    if (this.backtrackHistoryIndex !== null) {
+      if (binding.type === 'escape' || (binding.type === 'moveCursor' && binding.delta < 0)) {
+        this.stepBacktrack(-1);
+        return true;
+      }
+      if (binding.type === 'moveCursor' && binding.delta > 0) {
+        this.stepBacktrack(1);
+        return true;
+      }
+      if (binding.type === 'submit') {
+        const selection = this.backtrackHistoryIndex;
+        this.closeTranscript(false);
+        this.resetBacktrackState();
+        void this.forkBeforePrompt(selection);
+        return true;
+      }
+      if (
+        binding.type === 'toggleTranscript' ||
+        binding.type === 'interrupt' ||
+        (binding.type === 'insertText' && binding.text.toLowerCase() === 'q')
+      ) {
+        this.closeTranscript();
+        return true;
+      }
+      return true;
+    }
     if (
       binding.type === 'toggleTranscript' ||
-      binding.type === 'escape' ||
       binding.type === 'interrupt' ||
       (binding.type === 'insertText' && binding.text.toLowerCase() === 'q')
     ) {
       this.closeTranscript();
+      return true;
+    }
+    if (binding.type === 'escape') {
+      this.beginBacktrackPreview();
       return true;
     }
     if (binding.type === 'moveSuggestion') {
@@ -1498,6 +1790,30 @@ export class AgentApp {
 
     return selection;
   };
+
+  private requestTextInput = async (request: TextPromptRequest) => {
+    if (this.pendingTextPromptResolver) throw new Error('another text prompt is already pending');
+    if (this.pendingChoiceResolver || this.pendingApprovalResolver || this.configPickerResolver)
+      throw new Error('another prompt is already open');
+
+    return await new Promise<string | null>(resolve => {
+      this.pendingTextPromptResolver = resolve;
+      this.store.setPendingTextPrompt(request);
+      this.store.replaceInput(request.initialValue);
+      this.render();
+    });
+  };
+
+  private resolvePendingTextPrompt(value: string | null) {
+    const resolve = this.pendingTextPromptResolver;
+    if (!resolve || !this.state.pendingTextPrompt) return false;
+    this.pendingTextPromptResolver = null;
+    this.store.setPendingTextPrompt(null);
+    this.store.resetComposer();
+    this.render();
+    resolve(value);
+    return true;
+  }
 
   private resolvePendingChoice(selection: ChoiceSelection | null) {
     const resolve = this.pendingChoiceResolver;
@@ -1878,6 +2194,7 @@ export class AgentApp {
       openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
       openConfigPicker: () => this.openConfigPicker(),
       requestChoice: request => this.requestChoice(request),
+      requestTextInput: request => this.requestTextInput(request),
       showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
       getActiveToolSummaries: () => this.getActiveToolSummaries(),
       getSessionId: () => this.sessionId,
@@ -1898,6 +2215,8 @@ export class AgentApp {
       stopBackgroundTerminals: () => this.backgroundTerminals.stopAll(),
       printEntries: entries => this.printEphemeralEntries(entries),
       persistEntries: entries => this.persistHistoryEntries(entries),
+      getGoal: () => this.state.goal,
+      setGoal: goal => this.setThreadGoal(goal),
     };
   }
 
@@ -2005,16 +2324,34 @@ export class AgentApp {
       return;
     }
 
-    await this.promptHistory.add(trimmed, process.cwd());
+    const turnStartedAt = Date.now();
+    const activeGoalCreatedAt = this.state.goal?.status === 'active'
+      ? this.state.goal.createdAt
+      : null;
+    let turnHadWorkActivity = false;
+
+    if (!queuedSubmission.hidden) await this.promptHistory.add(trimmed, process.cwd());
     const displayedUserMessage = displayImageTokens(trimmed);
-    this.startThreadTitleGeneration(displayedUserMessage);
+    if (!queuedSubmission.hidden) this.startThreadTitleGeneration(displayedUserMessage);
     this.recordTurnContext();
-    this.persistEntry(EntryKind.User, displayedUserMessage);
+    if (!queuedSubmission.hidden) {
+      this.persistHistoryEntries([{
+        type: 'entry',
+        kind: EntryKind.User,
+        text: displayedUserMessage,
+        turn: {
+          messageIndex: this.state.messages.length,
+          prompt: trimmed,
+          goal: this.state.goal ? { ...this.state.goal } : null,
+        },
+      }]);
+    }
 
     const abortController = createAbortController(this.store);
     let assistantStream: BlockStreamPump | null = null;
     let reasoningStream: BlockStreamPump | null = null;
     let interrupted = false;
+    let completedSuccessfully = false;
     let immediateSteer: QueuedSubmission | null = null;
 
     this.setBusy(true);
@@ -2119,6 +2456,7 @@ export class AgentApp {
               this.scheduleRender();
               break;
             case 'tool-call': {
+              turnHadWorkActivity = true;
               const inputRecord = event.call.input &&
                 typeof event.call.input === 'object' &&
                 !Array.isArray(event.call.input)
@@ -2201,6 +2539,11 @@ export class AgentApp {
       this.lastRequestId = result.responseId;
       this.store.pushMessages(result.messages);
       this.store.setLastUsage(result.usage);
+      this.accountGoalTurn(
+        activeGoalCreatedAt,
+        (Date.now() - turnStartedAt) / 1_000,
+        result.usage.inputTokens + result.usage.outputTokens + result.usage.reasoningTokens,
+      );
       this.persistLiveOutcome([
         ...(this.state.liveReasoningText.trim()
           ? [
@@ -2210,6 +2553,9 @@ export class AgentApp {
                 text: this.state.liveReasoningText,
               } as const,
             ]
+          : []),
+        ...(turnHadWorkActivity
+          ? [{ type: 'separator', elapsedSeconds: Math.floor((Date.now() - turnStartedAt) / 1_000) } as const]
           : []),
         ...(this.state.liveAssistantText.trim()
           ? [
@@ -2221,9 +2567,15 @@ export class AgentApp {
             ]
           : []),
       ]);
+      completedSuccessfully = true;
     } catch (error: unknown) {
       reasoningStream?.flush();
       assistantStream?.flush();
+      this.accountGoalTurn(
+        activeGoalCreatedAt,
+        (Date.now() - turnStartedAt) / 1_000,
+        this.state.livePromptTokens + this.state.liveOutputTokens + this.state.liveReasoningTokens,
+      );
       if (abortController.signal.aborted) {
         interrupted = true;
         const shouldSubmitSteersImmediately = this.state.steerRequested;
@@ -2236,6 +2588,9 @@ export class AgentApp {
           };
         } else if (!shouldSubmitSteersImmediately) {
           this.restorePendingInputsToComposer();
+        }
+        if (!immediateSteer && this.state.goal?.createdAt === activeGoalCreatedAt && this.state.goal.status === 'active') {
+          this.setThreadGoal({ ...this.state.goal, status: 'paused', updatedAt: Date.now() }, false);
         }
 
         this.persistLiveOutcome([
@@ -2266,9 +2621,16 @@ export class AgentApp {
           },
         ]);
       } else {
+        const errorText = plain(error instanceof Error ? error.message : String(error));
         if (this.state.pendingSteers.length > 0) {
           interrupted = true;
           this.restorePendingInputsToComposer();
+        }
+        if (this.state.goal?.createdAt === activeGoalCreatedAt && this.state.goal.status === 'active') {
+          const goalStatus = /(?:429|quota|usage limit|rate limit)/i.test(errorText)
+            ? 'usage_limited'
+            : 'blocked';
+          this.setThreadGoal({ ...this.state.goal, status: goalStatus, updatedAt: Date.now() }, false);
         }
         this.persistLiveOutcome([
           ...(this.state.liveReasoningText.trim()
@@ -2292,7 +2654,7 @@ export class AgentApp {
           {
             type: 'entry',
             kind: EntryKind.Error,
-            text: plain(error instanceof Error ? error.message : String(error)),
+            text: errorText,
           },
         ]);
       }
@@ -2325,7 +2687,10 @@ export class AgentApp {
       return;
     }
 
-    if (!interrupted) void this.drainQueuedSubmissions();
+    if (!interrupted) {
+      if (completedSuccessfully) this.enqueueGoalContinuation();
+      void this.drainQueuedSubmissions();
+    }
   }
 
   private clearHistoryNavigation() {
@@ -2384,6 +2749,7 @@ export class AgentApp {
     const pending = this.store.takePendingSteers();
     const queued = this.store.takeQueuedSubmissions();
     const restored = [...pending, ...queued]
+      .filter(submission => !submission.hidden)
       .map(submission => submission.text)
       .filter(text => text.length > 0)
       .join('\n');
@@ -2473,7 +2839,12 @@ export class AgentApp {
 
   private editLatestQueuedSubmission() {
     if (this.getSuggestions().length > 0) return false;
-    const submission = this.store.popQueuedSubmission();
+    const index = this.state.queuedSubmissions.findLastIndex(submission => !submission.hidden);
+    if (index < 0) return false;
+    let submission: QueuedSubmission | undefined;
+    this.store.update(state => {
+      [submission] = state.queuedSubmissions.splice(index, 1);
+    });
     if (!submission) return false;
 
     this.clearHistoryNavigation();
@@ -2599,13 +2970,9 @@ export class AgentApp {
   }
 
   private async tryAcceptAndSubmitSlashCommandSuggestion() {
-    const currentSlashCommand = this.getCurrentSlashCommand();
-    if (currentSlashCommand?.type !== 'resolved') return false;
-
     const suggestions = this.normalizeSuggestions();
     const selectedSuggestion = suggestions[this.state.selectedSuggestion];
     if (selectedSuggestion?.kind !== 'slash-command') return false;
-    if (selectedSuggestion.commandName !== currentSlashCommand.command.name) return false;
 
     if (selectedSuggestion.disabled) {
       this.showFooterNotice(selectedSuggestion.detail || 'Unavailable');
@@ -2696,11 +3063,32 @@ export class AgentApp {
     return true;
   }
 
+  private handlePendingTextPromptBinding(binding: ReturnType<typeof resolveInputBinding>) {
+    if (!this.state.pendingTextPrompt || !binding) return false;
+    if (binding.type === 'escape') return this.resolvePendingTextPrompt(null);
+    if (binding.type === 'submit')
+      return this.resolvePendingTextPrompt(this.state.inputChars.join('').trim() || null);
+    return false;
+  }
+
   private handleEscape() {
     if (this.interruptActiveTurn(true)) {
+      this.resetBacktrackState();
       this.render();
       return;
     }
+    if (this.state.inputChars.length > 0) {
+      this.resetBacktrackState();
+      return;
+    }
+    if (this.backtrackPrimed) {
+      this.beginBacktrackPreview();
+      return;
+    }
+    this.backtrackPrimed = true;
+    if (this.userHistoryIndices().length > 0)
+      this.store.setFooterNotice(BACKTRACK_FOOTER_HINT);
+    this.render();
   }
 
   private handleDelete(backward: boolean) {
@@ -2718,6 +3106,9 @@ export class AgentApp {
     if (!binding) return;
 
     if (this.handleTranscriptBinding(binding)) return;
+
+    if (binding.type !== 'escape' && this.backtrackPrimed)
+      this.resetBacktrackState();
 
     if (binding.type === 'pasteImage') {
       await this.pasteClipboardImage();
@@ -2761,6 +3152,7 @@ export class AgentApp {
 
     if (this.handlePendingChoiceBinding(binding)) return;
     if (this.handlePendingApprovalBinding(binding)) return;
+    if (this.handlePendingTextPromptBinding(binding)) return;
 
     if (binding.type === 'escape') {
       this.handleEscape();
