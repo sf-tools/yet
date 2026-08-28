@@ -1,13 +1,13 @@
 import chalk from 'chalk';
-import { extname } from 'node:path';
 
 import { plain, truncateToWidth, widthOf } from '@/text';
-import { formatDiffStat } from '@/file-changes';
-import { highlightedCodeBlock, normalizeCodeLanguage } from '@/render/markdown';
+import { highlightedCodeBlock } from '@/render/markdown';
 import { panelize, wrapTextBlock } from '@/render/layout';
 import { blankLine, line, span } from '@/render/primitives';
-import type { Block, RenderContext, StyledLine } from '@/render/types';
-import type { FileChange, ToolHistoryEntry } from '@/types';
+import type { Block, RenderContext } from '@/render/types';
+import type { ToolHistoryEntry } from '@/types';
+
+export { renderFileChanges } from '@/render/diff';
 
 export type ToolRenderer = (entry: ToolHistoryEntry, ctx: RenderContext) => Block;
 
@@ -65,40 +65,6 @@ export function previewJson(value: unknown, ctx: RenderContext) {
   }
 }
 
-type ParsedDiffLine = {
-  type: 'chunk' | 'add' | 'remove' | 'context';
-  text: string;
-  oldLineNum?: number;
-  newLineNum?: number;
-};
-
-const FILE_LANGUAGE_ALIASES: Record<string, string> = {
-  '.cjs': 'javascript',
-  '.diff': 'diff',
-  '.go': 'go',
-  '.html': 'markup',
-  '.htm': 'markup',
-  '.js': 'javascript',
-  '.json': 'json',
-  '.jsx': 'jsx',
-  '.md': 'markdown',
-  '.mjs': 'javascript',
-  '.py': 'python',
-  '.rs': 'rust',
-  '.sh': 'bash',
-  '.sql': 'sql',
-  '.toml': 'toml',
-  '.ts': 'typescript',
-  '.tsx': 'tsx',
-  '.yaml': 'yaml',
-  '.yml': 'yaml',
-  '.zsh': 'bash',
-};
-
-export function inferCodeLanguage(path: string) {
-  return normalizeCodeLanguage(FILE_LANGUAGE_ALIASES[extname(path).toLowerCase()] ?? null);
-}
-
 export function previewCodeBlock(
   text: string,
   language: string | null,
@@ -122,170 +88,6 @@ export function previewCodeBlock(
   }
 
   return visible;
-}
-
-function tintSegments(segments: StyledLine['segments'], style: (text: string) => string) {
-  return segments.map(segment => ({
-    ...segment,
-    style: segment.style ? (text: string) => style(segment.style?.(text) ?? text) : style,
-  }));
-}
-
-function parseDiffLines(diff: string): ParsedDiffLine[] {
-  const lines = diff.split('\n');
-  const parsed: ParsedDiffLine[] = [];
-  let oldLineNum = 0;
-  let newLineNum = 0;
-
-  for (const rawLine of lines) {
-    if (!rawLine || rawLine.startsWith('--- ') || rawLine.startsWith('+++ ')) continue;
-
-    const chunkMatch = rawLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-    if (chunkMatch) {
-      oldLineNum = Number.parseInt(chunkMatch[1], 10);
-      newLineNum = Number.parseInt(chunkMatch[2], 10);
-      parsed.push({ type: 'chunk', text: rawLine });
-      continue;
-    }
-
-    if (rawLine.startsWith('+')) {
-      parsed.push({ type: 'add', text: rawLine.slice(1), newLineNum });
-      newLineNum += 1;
-      continue;
-    }
-
-    if (rawLine.startsWith('-')) {
-      parsed.push({ type: 'remove', text: rawLine.slice(1), oldLineNum });
-      oldLineNum += 1;
-      continue;
-    }
-
-    parsed.push({
-      type: 'context',
-      text: rawLine.startsWith(' ') ? rawLine.slice(1) : rawLine,
-      oldLineNum,
-      newLineNum,
-    });
-    oldLineNum += 1;
-    newLineNum += 1;
-  }
-
-  return parsed;
-}
-
-function lineNumberWidth(lines: ParsedDiffLine[]) {
-  const maxLineNum = lines.reduce(
-    (max, diffLine) => Math.max(max, diffLine.oldLineNum ?? 0, diffLine.newLineNum ?? 0),
-    0,
-  );
-  return Math.max(3, String(maxLineNum || 0).length);
-}
-
-function formatLineNumber(lineNum: number | undefined, width: number) {
-  return lineNum == null ? ''.padStart(width, ' ') : String(lineNum).padStart(width, ' ');
-}
-
-export function renderFileChanges(
-  fileChanges: FileChange[],
-  ctx: RenderContext,
-  options: { maxLinesPerFile?: number; showFileHeaders?: boolean } = {},
-): Block {
-  const block: Block = [];
-  const maxLinesPerFile = options.maxLinesPerFile ?? Math.max(8, Math.min(24, ctx.height - 16));
-  const showFileHeaders = options.showFileHeaders ?? true;
-
-  fileChanges.forEach((fileChange, index) => {
-    if (index > 0 && showFileHeaders) block.push(blankLine());
-
-    const statText = formatDiffStat(fileChange.stats);
-    if (showFileHeaders) block.push(
-      line(
-        span('  ', ctx.theme.subtle),
-        span(fileChange.path, ctx.theme.foreground),
-        ...(statText
-          ? [
-              span(' · ', ctx.theme.subtle),
-              ...(fileChange.stats.added > 0
-                ? [span(`+${fileChange.stats.added}`, chalk.greenBright)]
-                : []),
-              ...(fileChange.stats.modified > 0
-                ? [
-                    span(
-                      `${fileChange.stats.added > 0 ? ' ' : ''}~${fileChange.stats.modified}`,
-                      chalk.yellowBright,
-                    ),
-                  ]
-                : []),
-              ...(fileChange.stats.removed > 0
-                ? [
-                    span(
-                      `${fileChange.stats.added > 0 || fileChange.stats.modified > 0 ? ' ' : ''}-${fileChange.stats.removed}`,
-                      chalk.redBright,
-                    ),
-                  ]
-                : []),
-            ]
-          : [
-              span(' · ', ctx.theme.subtle),
-              span(fileChange.hasChanges ? fileChange.changeKind : 'no changes', ctx.theme.dimmed),
-            ]),
-      ),
-    );
-
-    if (!fileChange.diff) return;
-
-    const parsedLines = parseDiffLines(fileChange.diff);
-    const width = lineNumberWidth(parsedLines);
-    const visibleLines = ctx.transcriptMode ? parsedLines : parsedLines.slice(0, maxLinesPerFile);
-
-    for (const diffLine of visibleLines) {
-      if (diffLine.type === 'chunk') {
-        block.push(line(span('  ', ctx.theme.subtle), span(diffLine.text, chalk.cyanBright)));
-        continue;
-      }
-
-      const renderedLineNumber = formatLineNumber(
-        diffLine.type === 'remove' ? diffLine.oldLineNum : diffLine.newLineNum,
-        width,
-      );
-      const prefix = diffLine.type === 'add' ? '+' : diffLine.type === 'remove' ? '-' : ' ';
-      const style =
-        diffLine.type === 'add'
-          ? chalk.greenBright
-          : diffLine.type === 'remove'
-            ? chalk.redBright
-            : ctx.theme.dimmed;
-      const language = inferCodeLanguage(fileChange.path);
-      const highlighted = highlightedCodeBlock(diffLine.text, language, ctx);
-      const content =
-        highlighted[0]?.type === 'styled'
-          ? tintSegments(highlighted[0].segments, style)
-          : [span(diffLine.text, style)];
-
-      block.push(
-        line(
-          span('  ', ctx.theme.subtle),
-          span(`${renderedLineNumber} `, ctx.theme.subtle),
-          span(prefix, style),
-          ...content,
-        ),
-      );
-    }
-
-    if (parsedLines.length > visibleLines.length) {
-      block.push(
-        line(
-          span('  ', ctx.theme.subtle),
-          span(
-            `… +${parsedLines.length - visibleLines.length} diff lines (ctrl + t to view transcript)`,
-            ctx.theme.dimmed,
-          ),
-        ),
-      );
-    }
-  });
-
-  return block;
 }
 
 export function renderToolCard(

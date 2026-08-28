@@ -8,13 +8,19 @@ import {
 } from '@/agent/block-stream';
 import { isPermissionMode } from '@/permissions';
 import { renderHistoryEntry } from '@/render/components/entry';
+import { renderComposer } from '@/render/components/composer';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
 import { renderCommandActivity } from '@/render/components/tools/command-activity';
 import { renderTranscriptOverlay } from '@/render/components/transcript-overlay';
 import { renderMarkdown } from '@/render/markdown';
+import {
+  hideWebLinkDestination,
+  osc8Hyperlink,
+} from '@/render/terminal-hyperlinks';
 import { createRenderContext, serializeBlock } from '@/render';
 import { createAgentStore } from '@/store';
 import { createTheme } from '@/theme';
+import { stripAnsi, widthOf } from '@/text';
 import { EntryKind, type ToolHistoryEntry } from '@/types';
 import { check, deepEqual, equal } from './harness';
 
@@ -62,6 +68,36 @@ deepEqual(
 streamPump.dispose();
 
 const renderContext = createRenderContext(createTheme(), false, 80, 30);
+const tabbedComposerLines = serializeBlock(
+  renderComposer(
+    {
+      inputChars: Array.from('1234\t5'),
+      pasteRanges: [],
+      cursor: 6,
+    },
+    renderContext,
+  ).block,
+);
+check(
+  tabbedComposerLines.every(renderedLine => !renderedLine.includes('\t')) &&
+    tabbedComposerLines.every(renderedLine => widthOf(renderedLine) === renderContext.width + 1),
+  'composer tabs render as one cell without clipping the panel edge',
+);
+const pastedComposer = serializeBlock(
+  renderComposer(
+    {
+      inputChars: Array.from('first\nsecond\n'),
+      pasteRanges: [{ start: 0, end: 'first\nsecond\n'.length }],
+      cursor: 'first\nsecond\n'.length,
+    },
+    renderContext,
+  ).block,
+).join('\n');
+check(
+  stripAnsi(pastedComposer).includes('[pasted +2 lines]') &&
+    !stripAnsi(pastedComposer).includes('paste #'),
+  'multiline paste tokens use the lowercase Codex-style line-count label',
+);
 const renderedMarkdown = serializeBlock(
   renderMarkdown(
     [
@@ -97,6 +133,19 @@ check(
     renderedMarkdown.includes('Result') &&
     renderedMarkdown.includes('━━━━'),
   'Markdown tables use the Codex column and header-separator layout',
+);
+check(
+  hideWebLinkDestination(
+    'https://yet.dev/',
+    { TERM: 'xterm-256color', TERM_PROGRAM: 'ghostty' },
+    true,
+  ),
+  'Ghostty uses clickable Markdown labels without a visible destination suffix',
+);
+const linkedLabel = osc8Hyperlink('https://yet.dev/', 'Yet');
+check(
+  linkedLabel.includes('\u001b]8;;https://yet.dev/\u0007') && widthOf(linkedLabel) === 3,
+  'terminal hyperlinks are clickable without changing visible text width',
 );
 
 const commandHistory: ToolHistoryEntry[] = [
@@ -269,6 +318,50 @@ const renderedPatch = serializeBlock(
 check(
   renderedPatch.includes('• Edited src/example.ts (+1 -0)') && renderedPatch.includes('11 +new'),
   'apply_patch renders the Codex edit summary and numbered diff gutter',
+);
+const renderedMultiFilePatch = serializeBlock(
+  renderHistoryEntry(
+    {
+      type: 'tool',
+      toolCallId: 'patch-2',
+      toolName: 'apply_patch',
+      input: {},
+      output: 'done',
+      status: 'completed',
+      fileChanges: [
+        {
+          path: 'b.txt',
+          diff: '--- a/b.txt\n+++ b/b.txt\n@@ -1,0 +1,1 @@\n+new',
+          stats: { added: 1, modified: 0, removed: 0 },
+          changeKind: 'modified',
+          hasChanges: true,
+        },
+        {
+          path: 'a.txt',
+          diff: '--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-one\n+one changed',
+          stats: { added: 0, modified: 1, removed: 0 },
+          changeKind: 'modified',
+          hasChanges: true,
+        },
+      ],
+    },
+    renderContext,
+  ),
+)
+  .map(renderedLine => renderedLine.trimEnd())
+  .join('\n');
+equal(
+  renderedMultiFilePatch,
+  [
+    ' • Edited 2 files (+2 -1)',
+    '   └ a.txt (+1 -1)',
+    '     1 -one',
+    '     1 +one changed',
+    '',
+    '   └ b.txt (+1 -0)',
+    '     1 +new',
+  ].join('\n'),
+  'apply_patch matches the Codex multi-file summary, sorting, indentation, and diff rows',
 );
 const renderedWait = serializeBlock(
   renderCommandActivity(

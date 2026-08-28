@@ -45,6 +45,11 @@ function charWidth(ch: string) {
   return Math.max(1, widthOf(ch));
 }
 
+function pasteLabel(inputChars: string[], range: { start: number; end: number }) {
+  const lines = inputChars.slice(range.start, range.end).filter(ch => ch === '\n').length;
+  return `[pasted +${lines} lines]`;
+}
+
 function renderInputLines(
   state: ComposerState,
   viewWidth: number,
@@ -64,26 +69,27 @@ function renderInputLines(
   };
 
   const pushChar = (text: string, style?: (text: string) => string) => {
-    const width = charWidth(text);
+    const displayText = text === '\t' ? ' ' : text;
+    const width = charWidth(displayText);
 
     if (segments.length > 0 && currentWidth + width > viewWidth) flushLine();
 
-    segments.push(span(text, style));
+    segments.push(span(displayText, style));
     currentWidth += width;
   };
 
   let pasteIndex = 0;
-  let pasteCount = 0;
   let imageIndex = 0;
 
   for (let index = 0; index < state.inputChars.length; index += 1) {
     const range = pasteRanges[pasteIndex];
 
     if (range && index === range.start) {
-      pasteCount += 1;
-      const extraLines = state.inputChars.slice(range.start, range.end).filter(ch => ch === '\n').length;
-      const label = `[paste #${pasteCount} +${extraLines} lines]`;
-      pushChar(label, state.cursor >= range.start && state.cursor < range.end ? chalk.inverse : undefined);
+      const label = pasteLabel(state.inputChars, range);
+      const style = state.cursor >= range.start && state.cursor < range.end
+        ? chalk.cyanBright.inverse
+        : chalk.cyanBright;
+      pushChar(label, style);
       index = range.end - 1;
       pasteIndex += 1;
       continue;
@@ -134,7 +140,6 @@ function buildCursorMap(state: ComposerState, viewWidth: number) {
   const pasteRanges = [...state.pasteRanges].sort((left, right) => left.start - right.start || left.end - right.end);
   const imageRanges = imageTokenRanges(state.inputChars);
   let pasteIndex = 0;
-  let pasteCount = 0;
   let imageIndex = 0;
   let row = 0;
   let col = 0;
@@ -159,9 +164,7 @@ function buildCursorMap(state: ComposerState, viewWidth: number) {
     const range = pasteRanges[pasteIndex];
 
     if (range && index === range.start) {
-      pasteCount += 1;
-      const extraLines = state.inputChars.slice(range.start, range.end).filter(ch => ch === '\n').length;
-      placeToken(range.start, range.end, `[paste #${pasteCount} +${extraLines} lines]`);
+      placeToken(range.start, range.end, pasteLabel(state.inputChars, range));
       index = range.end - 1;
       pasteIndex += 1;
       continue;

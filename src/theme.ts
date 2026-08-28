@@ -228,6 +228,7 @@ export function createTheme() {
 
   return {
     sync,
+    isLight: () => isLightTheme,
     panelBg: () =>
       applyCursorTint(backgroundRgb, isLightTheme ? cursorPanelLight : cursorPanelDark),
     composerBg: () =>

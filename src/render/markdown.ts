@@ -22,6 +22,11 @@ import 'prismjs/components/prism-markdown.js';
 import { repeat, truncateToWidth, widthOf } from '@/text';
 import { indent, prefixWidth } from './layout';
 import { blankLine, line, span } from './primitives';
+import {
+  hideWebLinkDestination,
+  osc8Hyperlink,
+  webDestination,
+} from './terminal-hyperlinks';
 import type { Block, RenderContext, Segment, Style, StyledLine } from './types';
 
 const md = new MarkdownIt({
@@ -305,17 +310,27 @@ function collectInlineRange(
 
       case 'link_open': {
         const href = getAttr(token, 'href');
+        const normalizedHref = href == null ? undefined : String(href).trim();
+        const safeWebDestination = normalizedHref
+          ? webDestination(normalizedHref)
+          : null;
+        const linkStyle = composeStyles(
+          inheritedStyle,
+          value => chalk.cyanBright.underline(value),
+          safeWebDestination && process.stdout.isTTY
+            ? value => osc8Hyperlink(safeWebDestination, value)
+            : undefined,
+        );
         const inner = collectInlineRange(
           tokens,
           env,
           index + 1,
           'link_close',
-          composeStyles(inheritedStyle, value => chalk.cyan.underline(value)),
+          linkStyle,
         );
         pieces.push(...inner.pieces);
 
-        const normalizedHref = href == null ? undefined : String(href).trim();
-        if (normalizedHref) {
+        if (normalizedHref && !hideWebLinkDestination(normalizedHref)) {
           appendSegment(pieces, ' (', inheritedStyle);
           appendSegment(
             pieces,

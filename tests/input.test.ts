@@ -29,13 +29,15 @@ deepEqual(
   'supported model list is exact',
 );
 equal(getOpenAIProviderModelId('gpt-daybreak-blue-latest'), 'daybreak-blue-latest', 'daybreak model maps to its provider ID');
+check(SYSTEM_PROMPT.includes('[Yet](yet.dev)'), 'the model prompt links Yet');
+check(SYSTEM_PROMPT.includes('[The San Francisco Tooling Company](sf.tools)'), 'the model prompt links its maker');
 const antRuntime = (globalThis as typeof globalThis & { Ant?: { version?: string } }).Ant;
 if (antRuntime?.version) {
-  check(SYSTEM_PROMPT.includes(`Runtime: Ant ${antRuntime.version}`), 'the model prompt uses Ant.version');
+  check(SYSTEM_PROMPT.includes(`Runtime: [Ant](antjs.org) ${antRuntime.version}`), 'the model prompt links Ant and uses Ant.version');
 } else {
   check(!SYSTEM_PROMPT.includes('Runtime:'), 'the model prompt omits runtime outside Ant');
 }
-check(!SYSTEM_PROMPT.includes(`Ant ${process.version}`), 'the model prompt never labels the Node compatibility version as Ant');
+check(!SYSTEM_PROMPT.includes(`[Ant](antjs.org) ${process.version}`), 'the model prompt never labels the Node compatibility version as Ant');
 
 deepEqual(resolveInputBinding(Buffer.from([0x16])), { type: 'pasteImage' }, 'ctrl+v requests an image paste');
 deepEqual(resolveInputBinding('\u001bv'), { type: 'pasteImage' }, 'alt+v requests an image paste');

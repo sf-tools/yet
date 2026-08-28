@@ -1,6 +1,9 @@
 import stringWidth from 'string-width';
 
-export const stripAnsi = (s: string) => s.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+export const stripAnsi = (s: string) =>
+  s
+    .replace(/\x1B\][\s\S]*?(?:\x07|\x1B\\)/g, '')
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 export const widthOf = (s: string) => stringWidth(stripAnsi(s));
 export const repeat = (ch: string, count: number) => ch.repeat(Math.max(0, count));
 export const plain = (s: string) => stripAnsi(s).replace(/\r/g, '');
