@@ -66,6 +66,7 @@ import {
   type AgentTextPart,
 } from './messages';
 import { runAgentLoop } from './runner';
+import { BlockStreamPump } from './block-stream';
 import {
   shouldPromptForTool,
   type PermissionMode,
@@ -1283,6 +1284,8 @@ export class AgentApp {
     this.persistEntry(EntryKind.User, displayedUserMessage);
 
     const abortController = createAbortController(this.store);
+    let assistantStream: BlockStreamPump | null = null;
+    let reasoningStream: BlockStreamPump | null = null;
 
     this.setBusy(true);
     this.store.clearLiveAssistantText();
@@ -1315,6 +1318,17 @@ export class AgentApp {
         });
       };
 
+      assistantStream = new BlockStreamPump(text => {
+        this.store.appendLiveAssistantText(text);
+        syncLiveUsage();
+        this.scheduleRender();
+      });
+      reasoningStream = new BlockStreamPump(text => {
+        this.store.appendLiveReasoningText(text);
+        syncLiveUsage();
+        this.scheduleRender();
+      });
+
       syncLiveUsage();
       this.render();
 
@@ -1331,17 +1345,15 @@ export class AgentApp {
           switch (event.type) {
             case 'reasoning-delta':
               currentStepReasoningText += event.text;
-              this.store.appendLiveReasoningText(event.text);
-              syncLiveUsage();
-              this.scheduleRender();
+              reasoningStream?.push(event.text);
               break;
             case 'text-delta':
               currentStepOutputText += event.text;
-              this.store.appendLiveAssistantText(event.text);
-              syncLiveUsage();
-              this.scheduleRender();
+              assistantStream?.push(event.text);
               break;
             case 'step-completed':
+              reasoningStream?.flush();
+              assistantStream?.flush();
               completedPromptTokens += event.usage.inputTokens;
               completedOutputTokens += event.usage.outputTokens;
               completedReasoningTokens += event.usage.reasoningTokens;
@@ -1425,6 +1437,8 @@ export class AgentApp {
       });
 
       abortController.signal.throwIfAborted();
+      reasoningStream.flush();
+      assistantStream.flush();
       this.lastRequestId = result.responseId;
       this.store.pushMessages(result.messages);
       this.store.setLastUsage(result.usage);
@@ -1449,6 +1463,8 @@ export class AgentApp {
           : []),
       ]);
     } catch (error: unknown) {
+      reasoningStream?.flush();
+      assistantStream?.flush();
       if (abortController.signal.aborted) {
         this.persistLiveOutcome([
           ...(this.state.liveReasoningText.trim()
@@ -1503,6 +1519,8 @@ export class AgentApp {
         ]);
       }
     } finally {
+      reasoningStream?.dispose();
+      assistantStream?.dispose();
       this.store.clearLiveAssistantText();
       this.store.clearLiveReasoningText();
       this.store.resetLiveUsage();

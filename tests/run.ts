@@ -32,6 +32,13 @@ import {
   THREAD_TITLE_PROMPT_MAX_BYTES,
 } from '@/agent/thread-title';
 import { EntryKind } from '@/types';
+import {
+  BLOCK_STREAM_CATCH_UP_AGE_MS,
+  BLOCK_STREAM_CATCH_UP_LINES,
+  BLOCK_STREAM_TICK_MS,
+  BlockStreamBuffer,
+  BlockStreamPump,
+} from '@/agent/block-stream';
 
 function fail(error: unknown) {
   process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`);
@@ -166,6 +173,47 @@ equal(
 
 check(isPermissionMode('ask') && isPermissionMode('auto') && isPermissionMode('full'), 'modes');
 check(!isPermissionMode('yolo'), 'yolo is a flag, not a stored mode');
+
+const blockStream = new BlockStreamBuffer();
+check(!blockStream.push('partial'), 'streaming hides an incomplete source line');
+equal(blockStream.drain(), '', 'an incomplete source line cannot commit');
+check(blockStream.push(' line\nsecond\ntrailing'), 'newlines enqueue complete source blocks');
+equal(blockStream.drain(), 'partial line\n', 'smooth streaming commits one source block per tick');
+equal(blockStream.drain(), 'second\n', 'streaming preserves FIFO block order');
+equal(blockStream.finalize(), 'trailing', 'stream finalization exposes the unfinished tail');
+
+const catchUpStream = new BlockStreamBuffer();
+const catchUpText = Array.from(
+  { length: BLOCK_STREAM_CATCH_UP_LINES },
+  (_value, index) => `line-${index}\n`,
+).join('');
+catchUpStream.push(catchUpText, 1_000);
+equal(
+  catchUpStream.drain(1_001),
+  catchUpText,
+  'deep stream queues drain as one catch-up block',
+);
+const agedStream = new BlockStreamBuffer();
+agedStream.push('old-1\nold-2\n', 2_000);
+equal(
+  agedStream.drain(2_000 + BLOCK_STREAM_CATCH_UP_AGE_MS),
+  'old-1\nold-2\n',
+  'old stream queues catch up before visible lag grows',
+);
+
+const pumpedBlocks: string[] = [];
+const streamPump = new BlockStreamPump(text => pumpedBlocks.push(text));
+streamPump.push('first\nsecond tail');
+await new Promise(resolve => setTimeout(resolve, BLOCK_STREAM_TICK_MS * 2));
+deepEqual(pumpedBlocks, ['first\n'], 'the stream pump publishes complete blocks on frame ticks');
+streamPump.flush();
+deepEqual(
+  pumpedBlocks,
+  ['first\n', 'second tail'],
+  'the stream pump flushes the final incomplete block exactly once',
+);
+streamPump.dispose();
+
 check(isPotentiallyUnsafeCommand('rm -rf build'), 'recursive delete is unsafe');
 check(isPotentiallyUnsafeCommand('curl https://example.com'), 'network command is unsafe');
 check(!isPotentiallyUnsafeCommand('rg TODO src'), 'read-only search is ordinary');
