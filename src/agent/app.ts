@@ -9,7 +9,12 @@ import { resolveInputBinding, splitInputEvents } from './keybinds';
 import { takeOverEarlyStdin } from './early-stdin';
 import { startMentionIndex } from './mention-index';
 import { discoverSkills, loadSkillInstructionMessages, renderSkillsCatalog, selectedSkills, type SkillMetadata } from './skills';
-import { PromptHistoryStore } from './prompt-history';
+import {
+  mergePromptHistoryEntries,
+  navigatePromptHistory,
+  PromptHistoryStore,
+  type PromptHistoryEntry,
+} from './prompt-history';
 import { blankLine, vstack } from '@/render/primitives';
 import { renderFooter } from '@/render/components/footer';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
@@ -43,6 +48,7 @@ import {
 import {
   createTurnContextEvent,
   hydrateStateFromSession,
+  listYetSessionPrompts,
   loadYetSession,
   persistedStateFromAgentState,
   SessionRecorder,
@@ -275,6 +281,7 @@ export class AgentApp {
   private lastRenderAt = 0;
   private historyNavigationIndex: number | null = null;
   private historyNavigationDraft = '';
+  private recoveredInputHistory: Promise<PromptHistoryEntry[]> | null = null;
   private preferredComposerColumn: number | null = null;
   private pendingApprovalResolver: ((decision: ApprovalDecision) => void) | null = null;
   private pendingChoiceResolver: ((selection: ChoiceSelection | null) => void) | null = null;
@@ -2830,42 +2837,28 @@ export class AgentApp {
   }
 
   private async getInputHistory() {
-    const history = await this.promptHistory.listForWorkspace(process.cwd());
-    return history.map(entry => entry.text);
+    this.recoveredInputHistory ??= listYetSessionPrompts({ cwd: process.cwd() }).catch(() => []);
+    const [history, recovered] = await Promise.all([
+      this.promptHistory.listForWorkspace(process.cwd()),
+      this.recoveredInputHistory,
+    ]);
+    return mergePromptHistoryEntries(history, recovered).map(entry => entry.text);
   }
 
   private async moveInputHistory(delta: number) {
     const history = await this.getInputHistory();
-    if (history.length === 0) return false;
+    const next = navigatePromptHistory(
+      history,
+      { index: this.historyNavigationIndex, draft: this.historyNavigationDraft },
+      this.state.inputChars.join(''),
+      delta,
+    );
+    if (!next) return false;
 
-    if (delta < 0) {
-      if (this.historyNavigationIndex === null) {
-        this.historyNavigationDraft = this.state.inputChars.join('');
-        this.historyNavigationIndex = history.length - 1;
-      } else {
-        this.historyNavigationIndex = Math.max(0, this.historyNavigationIndex - 1);
-      }
-
-      this.resetPreferredComposerColumn();
-      this.store.replaceInput(history[this.historyNavigationIndex]);
-      this.store.resetSelectedSuggestion();
-      this.render();
-      return true;
-    }
-
-    if (this.historyNavigationIndex === null) return false;
-
-    const nextIndex = this.historyNavigationIndex + 1;
-    if (nextIndex >= history.length) {
-      const draft = this.historyNavigationDraft;
-      this.clearHistoryNavigation();
-      this.resetPreferredComposerColumn();
-      this.store.replaceInput(draft);
-    } else {
-      this.historyNavigationIndex = nextIndex;
-      this.resetPreferredComposerColumn();
-      this.store.replaceInput(history[nextIndex]);
-    }
+    this.historyNavigationIndex = next.index;
+    this.historyNavigationDraft = next.draft;
+    this.resetPreferredComposerColumn();
+    this.store.replaceInput(next.text);
 
     this.store.resetSelectedSuggestion();
     this.render();
@@ -3328,6 +3321,7 @@ export class AgentApp {
       if (this.editLatestQueuedSubmission()) return;
       if (binding.fallback === 'up') {
         if (this.moveSuggestionSelection(-1)) return;
+        if (this.historyNavigationIndex !== null && await this.moveInputHistory(-1)) return;
         if (this.moveComposerCursorVertical(-1)) return;
         await this.moveInputHistory(-1);
       } else {
@@ -3348,6 +3342,7 @@ export class AgentApp {
     switch (binding.type) {
       case 'moveSuggestion': {
         if (this.moveSuggestionSelection(binding.delta)) return;
+        if (this.historyNavigationIndex !== null && await this.moveInputHistory(binding.delta)) return;
         if (this.moveComposerCursorVertical(binding.delta)) return;
         await this.moveInputHistory(binding.delta);
         return;

@@ -8,6 +8,59 @@ export type PromptHistoryEntry = {
   createdAt?: string;
 };
 
+export type PromptHistoryNavigation = {
+  index: number | null;
+  draft: string;
+};
+
+function historyTimestamp(entry: PromptHistoryEntry) {
+  const timestamp = entry.createdAt ? Date.parse(entry.createdAt) : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+export function mergePromptHistoryEntries(
+  ...sources: PromptHistoryEntry[][]
+) {
+  const seen = new Set<string>();
+  return sources
+    .flatMap((entries, source) => entries.map((entry, order) => ({ entry, source, order })))
+    .sort((left, right) =>
+      historyTimestamp(right.entry) - historyTimestamp(left.entry) ||
+      left.source - right.source ||
+      left.order - right.order,
+    )
+    .flatMap(({ entry }) => {
+      if (!entry.text || seen.has(entry.text)) return [];
+      seen.add(entry.text);
+      return [entry];
+    });
+}
+
+export function navigatePromptHistory(
+  history: string[],
+  navigation: PromptHistoryNavigation,
+  currentInput: string,
+  delta: number,
+): (PromptHistoryNavigation & { text: string }) | null {
+  if (history.length === 0) return null;
+
+  if (delta < 0) {
+    const index = navigation.index === null
+      ? 0
+      : Math.min(history.length - 1, navigation.index + 1);
+    return {
+      index,
+      draft: navigation.index === null ? currentInput : navigation.draft,
+      text: history[index] ?? '',
+    };
+  }
+
+  if (navigation.index === null) return null;
+  const index = navigation.index - 1;
+  if (index < 0) return { index: null, draft: '', text: navigation.draft };
+  return { index, draft: navigation.draft, text: history[index] ?? '' };
+}
+
 const DEFAULT_HISTORY_PATH = join(homedir(), '.yet', 'prompt-history.jsonl');
 const DEFAULT_HISTORY_SIZE = 1000;
 

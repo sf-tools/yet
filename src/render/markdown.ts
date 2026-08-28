@@ -317,7 +317,7 @@ function collectInlineRange(
         const linkStyle = composeStyles(
           inheritedStyle,
           value => chalk.cyanBright.underline(value),
-          safeWebDestination && process.stdout.isTTY
+          safeWebDestination
             ? value => osc8Hyperlink(safeWebDestination, value)
             : undefined,
         );

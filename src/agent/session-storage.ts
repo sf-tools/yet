@@ -55,6 +55,12 @@ export type YetSessionListEntry = {
   forkPoint?: number;
 };
 
+export type YetSessionPromptHistoryEntry = {
+  text: string;
+  cwd: string;
+  createdAt: string;
+};
+
 export type LoadedYetSession = {
   version: 2;
   sessionId: string;
@@ -665,6 +671,54 @@ export async function listYetSessions(
     options.cwd,
     options.archived,
   );
+}
+
+export async function listYetSessionPrompts(
+  options: { cwd: string; yetHome?: string; limit?: number },
+): Promise<YetSessionPromptHistoryEntry[]> {
+  const yetHome = options.yetHome ?? DEFAULT_YET_HOME;
+  const workspace = resolve(options.cwd);
+  const limit = Math.max(1, options.limit ?? 1000);
+  const sessions = listEntriesFromIndex(await readIndex(yetHome), yetHome)
+    .filter(session => resolve(session.cwd) === workspace)
+    .sort((left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt));
+  const prompts: Array<YetSessionPromptHistoryEntry & { ordinal: number }> = [];
+
+  for (const session of sessions) {
+    if (!session.rolloutPath) continue;
+    let lines: YetRolloutLine[];
+    try {
+      lines = await readYetRollout(session.rolloutPath);
+    } catch {
+      continue;
+    }
+
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const event = lines[index];
+      if (event?.type !== 'user_message' || !event.payload.entries) continue;
+      for (let entryIndex = event.payload.entries.length - 1; entryIndex >= 0; entryIndex -= 1) {
+        const entry = event.payload.entries[entryIndex];
+        if (entry?.type !== 'entry' || entry.kind !== EntryKind.User) continue;
+        const text = (entry.turn?.prompt ?? entry.text).trim();
+        if (!text) continue;
+        prompts.push({
+          text,
+          cwd: session.cwd,
+          createdAt: event.timestamp,
+          ordinal: event.ordinal,
+        });
+      }
+    }
+
+    if (prompts.length >= limit) break;
+  }
+
+  return prompts
+    .sort((left, right) =>
+      Date.parse(right.createdAt) - Date.parse(left.createdAt) || right.ordinal - left.ordinal,
+    )
+    .slice(0, limit)
+    .map(({ ordinal: _ordinal, ...entry }) => entry);
 }
 
 export function listYetSessionsSync(

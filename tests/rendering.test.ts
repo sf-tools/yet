@@ -147,6 +147,24 @@ check(
   linkedLabel.includes('\u001b]8;;https://yet.dev/\u0007') && widthOf(linkedLabel) === 3,
   'terminal hyperlinks are clickable without changing visible text width',
 );
+const renderedMarkdownLink = serializeBlock(
+  renderMarkdown('[Yet](https://yet.dev/)', renderContext, 76),
+).join('\n');
+check(
+  renderedMarkdownLink.includes('\u001b]8;;https://yet.dev/\u0007'),
+  'Markdown links always retain their terminal click target',
+);
+if (hideWebLinkDestination('https://yet.dev/')) {
+  check(
+    stripAnsi(renderedMarkdownLink) === 'Yet' && renderedMarkdownLink.includes('\u001b]8;;'),
+    'supported terminals render a clickable cyan label without the raw Markdown destination',
+  );
+} else {
+  check(
+    stripAnsi(renderedMarkdownLink) === 'Yet (https://yet.dev/)',
+    'non-interactive and unsupported terminals retain the Markdown destination',
+  );
+}
 
 const commandHistory: ToolHistoryEntry[] = [
   {

@@ -3,6 +3,7 @@ import { getEarlyStdinStream } from '@/agent/early-stdin';
 import { readClipboardImage } from '@/agent/clipboard-image';
 import { displayImageTokens } from '@/agent/image-tokens';
 import { fallbackSearchMentionEntries } from '@/agent/mention-index';
+import { mergePromptHistoryEntries, navigatePromptHistory } from '@/agent/prompt-history';
 import {
   acceptSkillSuggestion,
   discoverSkills,
@@ -29,15 +30,66 @@ deepEqual(
   'supported model list is exact',
 );
 equal(getOpenAIProviderModelId('gpt-daybreak-blue-latest'), 'daybreak-blue-latest', 'daybreak model maps to its provider ID');
-check(SYSTEM_PROMPT.includes('[Yet](yet.dev)'), 'the model prompt links Yet');
-check(SYSTEM_PROMPT.includes('[The San Francisco Tooling Company](sf.tools)'), 'the model prompt links its maker');
+check(SYSTEM_PROMPT.includes('You are Yet,'), 'the model prompt identifies Yet');
+check(
+  SYSTEM_PROMPT.includes('made by The San Francisco Tooling Company.'),
+  'the model prompt identifies its maker',
+);
 const antRuntime = (globalThis as typeof globalThis & { Ant?: { version?: string } }).Ant;
 if (antRuntime?.version) {
-  check(SYSTEM_PROMPT.includes(`Runtime: [Ant](antjs.org) ${antRuntime.version}`), 'the model prompt links Ant and uses Ant.version');
+  check(SYSTEM_PROMPT.includes(`Runtime: Ant ${antRuntime.version}`), 'the model prompt uses Ant.version');
 } else {
   check(!SYSTEM_PROMPT.includes('Runtime:'), 'the model prompt omits runtime outside Ant');
 }
 check(!SYSTEM_PROMPT.includes(`[Ant](antjs.org) ${process.version}`), 'the model prompt never labels the Node compatibility version as Ant');
+
+const promptHistory = ['newest prompt', 'middle prompt', 'oldest prompt'];
+const newestHistory = navigatePromptHistory(
+  promptHistory,
+  { index: null, draft: '' },
+  'draft text',
+  -1,
+);
+equal(newestHistory?.text, 'newest prompt', 'first Up recalls the newest persisted prompt');
+const middleHistory = navigatePromptHistory(promptHistory, newestHistory!, newestHistory!.text, -1);
+equal(middleHistory?.text, 'middle prompt', 'a second Up continues through persisted prompt history');
+const oldestHistory = navigatePromptHistory(promptHistory, middleHistory!, middleHistory!.text, -1);
+equal(oldestHistory?.text, 'oldest prompt', 'Up reaches older prompts after opening a new chat');
+const backToMiddleHistory = navigatePromptHistory(
+  promptHistory,
+  oldestHistory!,
+  oldestHistory!.text,
+  1,
+);
+equal(backToMiddleHistory?.text, 'middle prompt', 'Down walks back toward newer prompts');
+const backToNewestHistory = navigatePromptHistory(
+  promptHistory,
+  backToMiddleHistory!,
+  backToMiddleHistory!.text,
+  1,
+);
+const restoredDraftHistory = navigatePromptHistory(
+  promptHistory,
+  backToNewestHistory!,
+  backToNewestHistory!.text,
+  1,
+);
+deepEqual(
+  restoredDraftHistory,
+  { index: null, draft: '', text: 'draft text' },
+  'Down after the newest prompt restores the original composer draft',
+);
+deepEqual(
+  mergePromptHistoryEntries(
+    [{ text: 'latest local', createdAt: '2026-08-28T12:00:00.000Z' }],
+    [
+      { text: 'older rollout prompt', createdAt: '2026-08-28T11:00:00.000Z' },
+      { text: 'latest local', createdAt: '2026-08-28T10:00:00.000Z' },
+    ],
+  ).map(entry => entry.text),
+  ['latest local', 'older rollout prompt'],
+  'prompt history merges the append log with recovered session prompts',
+);
 
 deepEqual(resolveInputBinding(Buffer.from([0x16])), { type: 'pasteImage' }, 'ctrl+v requests an image paste');
 deepEqual(resolveInputBinding('\u001bv'), { type: 'pasteImage' }, 'alt+v requests an image paste');

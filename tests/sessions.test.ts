@@ -2,6 +2,7 @@ import {
   SessionRecorder,
   createTurnContextEvent,
   hydrateStateFromSession,
+  listYetSessionPrompts,
   listYetSessions,
   listYetSessionsSync,
   loadYetSession,
@@ -44,6 +45,37 @@ try {
       entry => entry.sessionId === 'deleted-session',
     ),
     'session deletion removes the session from the resume index',
+  );
+
+  const historyRecorder = await SessionRecorder.open({
+    sessionId: 'prompt-history-session',
+    cwd: sessionHome,
+    yetHome: sessionHome,
+  });
+  historyRecorder.record({
+    type: 'user_message',
+    payload: {
+      entries: [{ type: 'entry', kind: EntryKind.User, text: 'older saved prompt' }],
+    },
+  });
+  historyRecorder.record({
+    type: 'user_message',
+    payload: {
+      entries: [{
+        type: 'entry',
+        kind: EntryKind.User,
+        text: '[Image #1]',
+        turn: { messageIndex: 1, prompt: 'newer saved prompt with image token' },
+      }],
+    },
+  });
+  await historyRecorder.close();
+  deepEqual(
+    (await listYetSessionPrompts({ cwd: sessionHome, yetHome: sessionHome }))
+      .slice(0, 2)
+      .map(entry => entry.text),
+    ['newer saved prompt with image token', 'older saved prompt'],
+    'new chats recover multiple composer prompts from saved sessions in newest-first order',
   );
 
   const archivedRecorder = await SessionRecorder.open({
