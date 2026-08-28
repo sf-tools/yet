@@ -430,7 +430,12 @@ export class AgentApp {
 
   async start() {
     await this.theme.sync();
-    startMentionIndex(process.cwd());
+    const mentionIndex = startMentionIndex(process.cwd());
+    void mentionIndex.waitForReady().then(() => {
+      if (this.state.closed || !this.headerPrinted) return;
+      this.store.resetSelectedSuggestion();
+      this.scheduleRender();
+    });
     this.skills = discoverSkills();
 
     if (!this.bootFromSnapshot) {

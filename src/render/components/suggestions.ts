@@ -30,6 +30,16 @@ export function renderSuggestions(
         : max,
     0,
   );
+  const maxMentionNameWidth = suggestions.reduce(
+    (max, suggestion) =>
+      suggestion.kind === 'mention' ? Math.max(max, widthOf(suggestion.name)) : max,
+    0,
+  );
+  const maxMentionKindWidth = suggestions.reduce(
+    (max, suggestion) =>
+      suggestion.kind === 'mention' ? Math.max(max, widthOf(suggestion.resourceKind)) : max,
+    0,
+  );
   const maxLabelWidth = suggestions.reduce(
     (max, suggestion) =>
       Math.max(
@@ -80,6 +90,48 @@ export function renderSuggestions(
         span(repeat(' ', Math.max(0, labelColumnWidth - widthOf(visibleLabel) + gapWidth))),
         ...(visibleTag ? [span(visibleTag, tagStyle)] : []),
         ...(visibleDetail ? [span(' '), span(visibleDetail, detailStyle)] : []),
+      );
+    }
+
+    if (suggestion.kind === 'mention') {
+      const mentionPrefix = selected
+        ? [span(margin), span('→', ctx.theme.foreground), span(' ')]
+        : prefix;
+      const availableWidth = Math.max(0, ctx.width - prefixWidth);
+      const kindWidth = Math.min(maxMentionKindWidth, availableWidth);
+      const nameGapWidth = availableWidth > kindWidth ? 2 : 0;
+      const responsiveNameWidth = Math.max(8, Math.floor(availableWidth * 0.32));
+      const nameColumnWidth = Math.min(
+        maxMentionNameWidth,
+        30,
+        responsiveNameWidth,
+        Math.max(0, availableWidth - kindWidth - nameGapWidth),
+      );
+      const parentColumnWidth = Math.max(
+        0,
+        availableWidth - nameColumnWidth - nameGapWidth - kindWidth,
+      );
+      const visibleName = truncateToWidth(suggestion.name, nameColumnWidth);
+      const visibleParent = truncateToWidth(suggestion.parentPath, parentColumnWidth);
+      const visibleKind = truncateToWidth(suggestion.resourceKind, kindWidth);
+      const entryStyle =
+        selected || suggestion.resourceKind === 'File'
+          ? chalk.magentaBright
+          : ctx.theme.foreground;
+      const parentStyle = selected ? chalk.magentaBright : ctx.theme.subtle;
+
+      return line(
+        ...mentionPrefix,
+        span(visibleName, entryStyle),
+        span(
+          repeat(
+            ' ',
+            Math.max(0, nameColumnWidth - widthOf(visibleName) + nameGapWidth),
+          ),
+        ),
+        ...(visibleParent ? [span(visibleParent, parentStyle)] : []),
+        span(repeat(' ', Math.max(0, parentColumnWidth - widthOf(visibleParent)))),
+        ...(visibleKind ? [span(visibleKind, entryStyle)] : []),
       );
     }
 
@@ -135,12 +187,8 @@ export function renderSuggestions(
     const customLabelStyle = 'labelStyle' in suggestion ? suggestion.labelStyle : undefined;
     const customSuffixStyle = 'suffixStyle' in suggestion ? suggestion.suffixStyle : undefined;
     const customDetailStyle = 'detailStyle' in suggestion ? suggestion.detailStyle : undefined;
-    const selectedMentionStyle =
-      suggestion.kind === 'mention' ? chalk.magentaBright : undefined;
     const lineStyle =
-      selected && selectedMentionStyle
-        ? selectedMentionStyle
-        : customLabelStyle
+      customLabelStyle
           ? selected
             ? customLabelStyle
             : (text: string) => ctx.theme.dimmed(customLabelStyle(text))

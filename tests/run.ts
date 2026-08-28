@@ -8,6 +8,7 @@ import { createAgentStore } from '@/store';
 import { createToolRegistry } from '@/tools';
 import { runUserShell } from '@/agent/shell';
 import { getEarlyStdinStream } from '@/agent/early-stdin';
+import { fallbackSearchMentionEntries } from '@/agent/mention-index';
 import { getLastAssistantResponse } from '@/agent/messages';
 import {
   acceptSkillSuggestion,
@@ -90,6 +91,37 @@ deepEqual(
   'supported model list is exact',
 );
 equal(getOpenAIProviderModelId('gpt-daybreak-blue-latest'), 'daybreak-blue-latest', 'daybreak model maps to its provider ID');
+
+const fuzzyFileEntries = [
+  { kind: 'file' as const, label: 'ant.lockb', name: 'ant.lockb', searchPath: 'ant.lockb' },
+  {
+    kind: 'file' as const,
+    label: 'src/agent/thread-title.ts',
+    name: 'thread-title.ts',
+    searchPath: 'src/agent/thread-title.ts',
+  },
+  {
+    kind: 'file' as const,
+    label: 'src/render/components/transcript.ts',
+    name: 'transcript.ts',
+    searchPath: 'src/render/components/transcript.ts',
+  },
+];
+deepEqual(
+  fallbackSearchMentionEntries(fuzzyFileEntries, '', 10),
+  [],
+  'an empty @ query does not surface arbitrary files',
+);
+equal(
+  fallbackSearchMentionEntries(fuzzyFileEntries, 'ant', 10)[0]?.label,
+  'ant.lockb',
+  'file fuzzing ranks a direct basename match first',
+);
+equal(
+  fallbackSearchMentionEntries(fuzzyFileEntries, 'thtit', 10)[0]?.label,
+  'src/agent/thread-title.ts',
+  'file fuzzing supports non-contiguous path-aware queries',
+);
 
 const skillsHome = await mkdtemp(join(tmpdir(), 'yet-skills-'));
 try {

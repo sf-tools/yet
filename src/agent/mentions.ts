@@ -14,7 +14,16 @@ import {
 export type MentionSuggestion = {
   kind: 'mention';
   label: string;
+  name: string;
+  parentPath: string;
+  resourceKind: 'File' | 'Dir';
 };
+
+function parentPathFor(entry: MentionEntry) {
+  const normalized = entry.label.replace(/\/$/, '');
+  const slashIndex = normalized.lastIndexOf('/');
+  return slashIndex === -1 ? './' : normalized.slice(0, slashIndex + 1);
+}
 
 function currentMentionMatch(inputChars: string[], cursor: number) {
   const beforeCursor = inputChars.slice(0, cursor).join('');
@@ -51,24 +60,6 @@ function listDirectoryEntries(cwd: string, directory: string) {
     }));
 }
 
-function mergeEntries(...groups: MentionEntry[][]) {
-  const merged: MentionEntry[] = [];
-  const seen = new Set<string>();
-
-  for (const group of groups) {
-    for (const entry of group) {
-      if (seen.has(entry.label)) continue;
-      seen.add(entry.label);
-      merged.push(entry);
-    }
-  }
-
-  return merged.sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === 'file' ? -1 : 1;
-    return a.label.localeCompare(b.label);
-  });
-}
-
 export function currentMentionQuery(inputChars: string[], cursor: number) {
   return currentMentionMatch(inputChars, cursor)?.[1] ?? null;
 }
@@ -79,26 +70,31 @@ export function listMentionSuggestions(
   cwd = process.cwd(),
 ): MentionSuggestion[] {
   const query = currentMentionQuery(inputChars, cursor);
-  if (query === null) return [];
+  if (!query) return [];
 
   startMentionIndex(cwd);
   const stats = getMentionIndexStats(cwd);
   const { directory, fragment } = splitMentionQuery(query, cwd);
 
   try {
-    const localEntries =
-      directory || !query || stats.state !== MentionIndexState.Ready
-        ? fallbackSearchMentionEntries(
+    const entries =
+      stats.state === MentionIndexState.Ready
+        ? queryMentionIndex(query, 24, cwd)
+        : fallbackSearchMentionEntries(
             listDirectoryEntries(cwd, directory),
             directory ? fragment : query,
             24,
-          )
-        : [];
-    const workspaceEntries = query ? queryMentionIndex(query, 24, cwd) : [];
+          );
 
-    return mergeEntries(localEntries, workspaceEntries)
+    return entries
       .slice(0, 6)
-      .map<MentionSuggestion>(entry => ({ kind: 'mention', label: entry.label }));
+      .map<MentionSuggestion>(entry => ({
+        kind: 'mention',
+        label: entry.label,
+        name: entry.name,
+        parentPath: parentPathFor(entry),
+        resourceKind: entry.kind === 'folder' ? 'Dir' : 'File',
+      }));
   } catch {
     return [];
   }

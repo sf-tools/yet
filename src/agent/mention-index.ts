@@ -3,7 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import path from 'node:path';
-import Fuse, { type IFuseOptions } from 'fuse.js';
+import fuzzysort, { type SnapshotKey } from 'fuzzysort';
 
 export type MentionIndexEntry = {
   kind: 'file' | 'folder';
@@ -30,17 +30,7 @@ export type MentionIndexStats = {
 
 const WORKSPACE_SEARCH_LIMIT = 24;
 const MAX_RG_BUFFER_BYTES = 64 * 1024 * 1024;
-const EXCLUDED_NAMES = new Set(['.git', 'node_modules', 'dist', '.DS_Store']);
-
-const FUZZY_OPTIONS: IFuseOptions<MentionIndexEntry> = {
-  includeScore: true,
-  ignoreLocation: true,
-  threshold: 0.4,
-  keys: [
-    { name: 'name', weight: 0.65 },
-    { name: 'searchPath', weight: 0.35 },
-  ],
-};
+const EXCLUDED_NAMES = new Set(['.git']);
 
 function normalizePath(value: string) {
   return value.replaceAll('\\', '/').replace(/^\.\//, '').replace(/^\//, '').trim();
@@ -57,55 +47,19 @@ function parentDirectoriesFor(filePath: string) {
   return directories;
 }
 
-function compareEntries(a: MentionIndexEntry, b: MentionIndexEntry) {
-  if (a.kind !== b.kind) return a.kind === 'file' ? -1 : 1;
-  return a.label.localeCompare(b.label);
-}
-
-function searchPriority(entry: MentionIndexEntry, rawQuery: string) {
-  const query = normalizePath(rawQuery).toLowerCase();
-  if (!query) return entry.kind === 'folder' ? 1 : 0;
-
-  const name = entry.name.toLowerCase();
-  const searchPath = entry.searchPath.toLowerCase();
-  const pathSegments = searchPath.split('/');
-
-  let priority = 0;
-
-  if (
-    searchPath === query ||
-    `${searchPath}/` === query ||
-    `${query}/` === entry.label.toLowerCase()
-  )
-    priority += 1000;
-  if (name === query) priority += 800;
-  if (name.startsWith(query)) priority += 400;
-  if (searchPath.startsWith(query)) priority += 250;
-  if (searchPath.includes(`/${query}`)) priority += 120;
-  if (pathSegments.some(segment => segment.startsWith(query))) priority += 80;
-  if (entry.kind === 'folder') priority -= 25;
-
-  return priority;
-}
-
 function searchEntries(entries: MentionIndexEntry[], query: string, limit: number) {
-  if (!query) return [...entries].sort(compareEntries).slice(0, limit);
+  const normalizedQuery = normalizePath(query);
+  if (!normalizedQuery) return [];
 
-  const fuse = new Fuse(entries, FUZZY_OPTIONS);
-  return fuse
-    .search(normalizePath(query), { limit })
-    .sort((left, right) => {
-      if (left.item.kind !== right.item.kind) return left.item.kind === 'file' ? -1 : 1;
-
-      const priorityDiff = searchPriority(right.item, query) - searchPriority(left.item, query);
-      if (priorityDiff !== 0) return priorityDiff;
-
-      const scoreDiff = (left.score ?? 0) - (right.score ?? 0);
-      if (scoreDiff !== 0) return scoreDiff;
-
-      return compareEntries(left.item, right.item);
+  return fuzzysort
+    .go(normalizedQuery, entries, {
+      key: 'searchPath',
+      limit,
+      threshold: 0,
     })
-    .map(result => result.item);
+    .slice()
+    .sort((left, right) => right.score - left.score || left.obj.label.localeCompare(right.obj.label))
+    .map(result => result.obj);
 }
 
 function execFileText(file: string, args: string[], cwd: string) {
@@ -173,20 +127,11 @@ async function listWorkspaceFiles(cwd: string) {
       [
         '--files',
         '--hidden',
+        '--follow',
         '--glob',
         '!.git',
         '--glob',
         '!.git/**',
-        '--glob',
-        '!node_modules',
-        '--glob',
-        '!node_modules/**',
-        '--glob',
-        '!dist',
-        '--glob',
-        '!dist/**',
-        '--glob',
-        '!.DS_Store',
       ],
       cwd,
     );
@@ -241,7 +186,7 @@ class WorkspaceMentionIndex {
   private state = MentionIndexState.Unstarted;
   private initPromise: Promise<void> | null = null;
   private entries: MentionIndexEntry[] = [];
-  private fuse: Fuse<MentionIndexEntry> | null = null;
+  private snapshot: SnapshotKey<MentionIndexEntry> | null = null;
   private fileCount = 0;
   private folderCount = 0;
   private indexedAt: number | null = null;
@@ -271,22 +216,17 @@ class WorkspaceMentionIndex {
 
   query(query: string, limit = WORKSPACE_SEARCH_LIMIT) {
     this.startInBackground();
-    if (!this.fuse) return [];
+    const normalizedQuery = normalizePath(query);
+    if (!normalizedQuery || !this.snapshot) return [];
 
-    return this.fuse
-      .search(normalizePath(query), { limit })
-      .sort((left, right) => {
-        if (left.item.kind !== right.item.kind) return left.item.kind === 'file' ? -1 : 1;
-
-        const priorityDiff = searchPriority(right.item, query) - searchPriority(left.item, query);
-        if (priorityDiff !== 0) return priorityDiff;
-
-        const scoreDiff = (left.score ?? 0) - (right.score ?? 0);
-        if (scoreDiff !== 0) return scoreDiff;
-
-        return compareEntries(left.item, right.item);
-      })
-      .map(result => result.item);
+    return fuzzysort
+      .go(normalizedQuery, this.snapshot, { limit, threshold: 0 })
+      .slice()
+      .sort(
+        (left, right) =>
+          right.score - left.score || left.obj.label.localeCompare(right.obj.label),
+      )
+      .map(result => result.obj);
   }
 
   getStats(): MentionIndexStats {
@@ -307,7 +247,7 @@ class WorkspaceMentionIndex {
     this.entries = built.entries;
     this.fileCount = built.files;
     this.folderCount = built.folders;
-    this.fuse = new Fuse(this.entries, FUZZY_OPTIONS);
+    this.snapshot = fuzzysort.snapshot(this.entries, { key: 'searchPath' });
     this.indexedAt = Date.now();
     this.state = MentionIndexState.Ready;
   }
