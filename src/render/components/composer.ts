@@ -220,14 +220,7 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
   const validSlashCommand = slashMode && (state.slashCommandLength ?? 0) > 0;
   const capabilitiesHint = state.showCapabilitiesHint ? '/ commands · @ files · ! shell' : '';
   const capabilitiesWidth = widthOf(capabilitiesHint);
-  const prompt = renderComposerPrompt(
-    state,
-    ctx,
-    shellMode,
-    slashMode,
-    mentionMode,
-    validSlashCommand,
-  );
+  const prompt = renderComposerPrompt(state, ctx, shellMode, slashMode, mentionMode, validSlashCommand);
   const promptWidth = widthOf(prompt.text);
   const hintWidth = capabilitiesHint ? capabilitiesWidth + 1 : 0;
   const placeholderFill = (occupiedWidth: number) => repeat(' ', Math.max(0, contentWidth + 1 - occupiedWidth - hintWidth));
@@ -242,7 +235,7 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
           line(
             prompt,
             span(' '),
-            span('P', chalk.inverse),
+            span('A', chalk.inverse),
             span(label.slice(1), ctx.theme.dimmed),
             span(fill),
             ...(capabilitiesHint ? [span(' '), span(capabilitiesHint, ctx.theme.dimmed)] : []),
@@ -285,14 +278,7 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
 
     return {
       block: thinPanelize(
-        [
-          line(
-            prompt,
-            span(' ', chalk.inverse),
-            span(fill),
-            ...(capabilitiesHint ? [span(' '), span(capabilitiesHint, ctx.theme.dimmed)] : []),
-          ),
-        ],
+        [line(prompt, span(' ', chalk.inverse), span(fill), ...(capabilitiesHint ? [span(' '), span(capabilitiesHint, ctx.theme.dimmed)] : []))],
         {
           bg: ctx.theme.composerBg(),
           width: ctx.width,
@@ -308,16 +294,12 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
     let tokenStart = index;
     while (tokenStart > 0 && !/\s/.test(inputState.inputChars[tokenStart - 1])) tokenStart -= 1;
 
-    return (tokenStart === 0 && mentionMode) || inputState.inputChars[tokenStart] === '@'
-      ? chalk.magentaBright
-      : undefined;
+    return (tokenStart === 0 && mentionMode) || inputState.inputChars[tokenStart] === '@' ? chalk.magentaBright : undefined;
   };
   const inputLines = renderInputLines(
     inputState,
     contentWidth,
-    slashMode
-      ? index => (index < (state.slashCommandLength ?? 0) ? chalk.cyanBright : undefined)
-      : mentionStyleAt,
+    slashMode ? index => (index < (state.slashCommandLength ?? 0) ? chalk.cyanBright : undefined) : mentionStyleAt,
   );
   const block = inputLines.map((entry, index) =>
     line(
