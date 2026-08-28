@@ -27,7 +27,7 @@ function normalizeArgumentSuggestion(suggestion: SlashCommandArgumentSuggestion)
 }
 
 function getSuggestionContext(context?: SlashCommandSuggestionContext) {
-  return context ?? { getSessionId: () => '' };
+  return context ?? { getSessionId: () => '', getCurrentModel: () => '' };
 }
 
 export function currentSlashCommandQuery(

@@ -6,6 +6,7 @@ import {
   getContextWindow,
   getOpenAIModelDisplayName,
   isReasoningCapableOpenAIModel,
+  isSupportedOpenAIModel,
 } from '@/config';
 import { summarizeFileChanges } from '@/file-changes';
 import { widthOf } from '@/text';
@@ -134,6 +135,9 @@ function buildStatsLine(
     span(modelName, chalk.white),
     ...(isReasoningCapableOpenAIModel(state.currentModel)
       ? [span(' '), span(formatThinkingMode(state.thinkingMode), thinkingModeStyle(state.thinkingMode))]
+      : []),
+    ...(isSupportedOpenAIModel(state.currentModel) && state.fastModeEnabled
+      ? [span(' '), span('fast', chalk.hex('#ff9f1a').italic)]
       : []),
   ];
 

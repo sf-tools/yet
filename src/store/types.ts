@@ -28,6 +28,7 @@ export type AgentState = {
   selectedSuggestion: number;
   currentModel: string;
   thinkingMode: ThinkingMode;
+  fastModeEnabled: boolean;
   lastPromptTokens: number;
   lastOutputTokens: number;
   lastReasoningTokens: number;

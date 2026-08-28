@@ -15,6 +15,7 @@ import { isPermissionMode, type PermissionMode } from '@/permissions';
 export type YetPreferences = {
   model: string;
   reasoning: ThinkingMode;
+  fastModeEnabled: boolean;
   permissions: PermissionMode;
   autoCompactEnabled: boolean;
 };
@@ -25,6 +26,7 @@ export function defaultYetPreferences(): YetPreferences {
   return {
     model: DEFAULT_MODEL,
     reasoning: 'auto',
+    fastModeEnabled: false,
     permissions: 'ask',
     autoCompactEnabled: true,
   };
@@ -45,6 +47,10 @@ export function normalizeYetPreferences(value: unknown): YetPreferences {
   return {
     model,
     reasoning: supportedModes.includes(requestedReasoning) ? requestedReasoning : 'auto',
+    fastModeEnabled:
+      typeof candidate.fastModeEnabled === 'boolean'
+        ? candidate.fastModeEnabled
+        : defaults.fastModeEnabled,
     permissions: isPermissionMode(candidate.permissions) ? candidate.permissions : defaults.permissions,
     autoCompactEnabled:
       typeof candidate.autoCompactEnabled === 'boolean'

@@ -198,10 +198,23 @@ try {
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'permissions', 'plan', 'compact', 'copy', 'resume', 'rename', 'exit'],
+  ['status', 'model', 'effort', 'fast', 'permissions', 'plan', 'compact', 'copy', 'resume', 'rename', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
+
+const fastStore = createAgentStore();
+const fastCommand = builtinSlashCommands.find(command => command.name === 'fast');
+check(fastCommand !== undefined, '/fast is registered');
+await fastCommand.execute(
+  {
+    store: fastStore,
+    setFastModeEnabled: (enabled: boolean) => fastStore.setFastModeEnabled(enabled),
+    showFooterNotice: () => {},
+  } as unknown as SlashCommandContext,
+  { raw: '/fast', invocation: 'fast', argsText: '', argv: [] },
+);
+check(fastStore.getState().fastModeEnabled, '/fast enables priority processing');
 
 const statusEntries: HistoryEntry[] = [];
 const statusCommand = builtinSlashCommands.find(command => command.name === 'status');

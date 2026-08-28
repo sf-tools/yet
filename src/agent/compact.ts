@@ -13,6 +13,7 @@ export type CompactMessagesOptions = {
   force?: boolean;
   model?: string;
   thinkingMode?: ThinkingMode;
+  fastModeEnabled?: boolean;
 };
 
 export type CompactionResult = {
@@ -62,6 +63,7 @@ export async function compactMessages(
     force = false,
     model = MODEL,
     thinkingMode = 'auto',
+    fastModeEnabled = false,
   } = options;
   const systemMessages = getSystemMessages(messages);
   const conversationMessages = getConversationMessages(messages);
@@ -77,6 +79,7 @@ export async function compactMessages(
   const result = await generateOpenAIText({
     model,
     thinkingMode,
+    fastModeEnabled,
     messages: [
       ...systemMessages,
       ...messagesToSummarize,

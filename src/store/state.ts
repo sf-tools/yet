@@ -16,6 +16,7 @@ export const createInitialState = (): AgentState => ({
   selectedSuggestion: 0,
   currentModel: MODEL,
   thinkingMode: 'auto',
+  fastModeEnabled: false,
   lastPromptTokens: 0,
   lastOutputTokens: 0,
   lastReasoningTokens: 0,

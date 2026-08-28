@@ -16,6 +16,7 @@ export type SlashCommandContext = {
   compactConversation(options?: { manual?: boolean; force?: boolean }): Promise<boolean>;
   setCurrentModel(model: string): void;
   setThinkingMode(thinkingMode: ThinkingMode): void;
+  setFastModeEnabled(enabled: boolean): void;
   setPermissionMode(permissionMode: PermissionMode): void;
   setPlanningMode(enabled: boolean): void;
   enqueueSubmission(text: string, options?: { planningMode?: boolean }): void;
@@ -47,7 +48,12 @@ export type SlashCommandArgumentSuggestion =
       detailStyle?: TextStyle;
     };
 
-export type SlashCommandSuggestionContext = Pick<SlashCommandContext, 'getSessionId'>;
+export type SlashCommandSuggestionContext = Pick<
+  SlashCommandContext,
+  'getSessionId'
+> & {
+  getCurrentModel(): string;
+};
 
 export type SlashCommand = {
   name: string;

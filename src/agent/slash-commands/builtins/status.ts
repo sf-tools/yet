@@ -38,6 +38,7 @@ export const statusSlashCommand: SlashCommand = {
       ['cwd', process.cwd()],
       ['model', state.currentModel],
       ['effort', state.thinkingMode],
+      ['fast', state.fastModeEnabled ? 'on' : 'off'],
       ['permissions', state.permissionMode],
       ['planning', state.planningMode ? 'on' : 'off'],
       ['auto compact', state.autoCompactEnabled ? 'on' : 'off'],

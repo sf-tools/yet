@@ -36,6 +36,7 @@ export type AgentLoopEvent =
 export type RunAgentLoopOptions = {
   model: string;
   thinkingMode: ThinkingMode;
+  fastModeEnabled?: boolean;
   messages: AgentMessage[];
   tools: ToolRegistry;
   maxSteps?: number;
@@ -69,6 +70,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
     const step = await streamOpenAIResponse({
       model: options.model,
       thinkingMode: options.thinkingMode,
+      fastModeEnabled: options.fastModeEnabled,
       messages: options.messages,
       tools: options.tools.list(),
       previousResponseId,

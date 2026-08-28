@@ -42,6 +42,7 @@ export type OpenAIResponseStep = {
 type StreamStepOptions = {
   model: string;
   thinkingMode: ThinkingMode;
+  fastModeEnabled?: boolean;
   messages: AgentMessage[];
   tools: Tool[];
   previousResponseId?: string;
@@ -167,6 +168,7 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
       tools: options.tools.map(functionTool),
       parallel_tool_calls: false,
       reasoning: reasoning(options.thinkingMode),
+      ...(options.fastModeEnabled ? { service_tier: 'priority' as const } : {}),
       store: options.store ?? true,
       stream: true,
       ...(options.text ? { text: options.text } : {}),
@@ -235,6 +237,7 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
 export async function generateOpenAIText(options: {
   model: string;
   thinkingMode: ThinkingMode;
+  fastModeEnabled?: boolean;
   messages: AgentMessage[];
   signal?: AbortSignal;
   text?: ResponseTextConfig;

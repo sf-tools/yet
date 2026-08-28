@@ -330,6 +330,11 @@ function buildAgentStore(initialState: AgentState) {
       return state;
     },
 
+    setFastModeEnabled(fastModeEnabled: boolean) {
+      state.fastModeEnabled = fastModeEnabled;
+      return state;
+    },
+
     setLastUsage(usage: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number }) {
       state.lastPromptTokens = usage.inputTokens ?? 0;
       state.lastOutputTokens = usage.outputTokens ?? 0;

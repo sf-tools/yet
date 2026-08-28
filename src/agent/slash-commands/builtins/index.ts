@@ -2,6 +2,7 @@ import { compactSlashCommand } from './compact';
 import { copySlashCommand } from './copy';
 import { effortSlashCommand } from './effort';
 import { exitSlashCommand } from './exit';
+import { fastSlashCommand } from './fast';
 import { modelSlashCommand } from './model';
 import { planningSlashCommand } from './planning';
 import { permissionsSlashCommand } from './permissions';
@@ -13,6 +14,7 @@ export const builtinSlashCommands = [
   statusSlashCommand,
   modelSlashCommand,
   effortSlashCommand,
+  fastSlashCommand,
   permissionsSlashCommand,
   planningSlashCommand,
   compactSlashCommand,

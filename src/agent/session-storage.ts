@@ -31,6 +31,7 @@ type PersistedSessionState = {
   totalCost: number;
   currentModel: string;
   thinkingMode: AgentState['thinkingMode'];
+  fastModeEnabled: boolean;
   permissionMode: AgentState['permissionMode'];
   autoCompactEnabled: boolean;
   planningMode: boolean;
@@ -62,6 +63,7 @@ export type ThreadNameSource = 'provisional' | 'generated' | 'manual';
 type TurnContextPayload = {
   model: string;
   thinkingMode: AgentState['thinkingMode'];
+  fastModeEnabled: boolean;
   permissionMode: AgentState['permissionMode'];
   autoCompactEnabled: boolean;
   planningMode: boolean;
@@ -154,6 +156,7 @@ function persistedStateFromAgentState(
     totalCost: state.totalCost,
     currentModel: state.currentModel,
     thinkingMode: state.thinkingMode,
+    fastModeEnabled: state.fastModeEnabled,
     permissionMode: state.permissionMode,
     autoCompactEnabled: state.autoCompactEnabled,
     planningMode: state.planningMode,
@@ -202,6 +205,7 @@ function hydratePersistedState(persisted: PersistedSessionState): AgentState {
     historyEntries: sanitizeHistoryEntriesForResume(persisted.historyEntries),
     inputChars: persisted.inputChars,
     messages: sanitizeMessagesForResume(persisted.messages),
+    fastModeEnabled: persisted.fastModeEnabled ?? false,
     planningMode: persisted.planningMode,
     permissionMode: persisted.permissionMode ?? initial.permissionMode,
     showThinking: persisted.showThinking ?? initial.showThinking,
@@ -245,6 +249,7 @@ function applyEvent(state: AgentState, event: YetSessionEvent) {
     case 'turn_context':
       state.currentModel = event.payload.model;
       state.thinkingMode = event.payload.thinkingMode;
+      state.fastModeEnabled = event.payload.fastModeEnabled ?? false;
       state.permissionMode = event.payload.permissionMode;
       state.autoCompactEnabled = event.payload.autoCompactEnabled;
       state.planningMode = event.payload.planningMode;
@@ -685,6 +690,7 @@ export function createTurnContextEvent(
     payload: {
       model: state.currentModel,
       thinkingMode: state.thinkingMode,
+      fastModeEnabled: state.fastModeEnabled,
       permissionMode: state.permissionMode,
       autoCompactEnabled: state.autoCompactEnabled,
       planningMode: state.planningMode,

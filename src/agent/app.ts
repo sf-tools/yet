@@ -138,6 +138,7 @@ export class AgentApp {
   });
   private readonly slashCommands = createSlashCommandRegistry(builtinSlashCommands, {
     getSessionId: () => this.sessionId,
+    getCurrentModel: () => this.state.currentModel,
   });
 
   private readonly statusAnimationTimer: ReturnType<typeof setInterval>;
@@ -380,6 +381,7 @@ export class AgentApp {
       const preferences = await loadYetPreferences();
       this.store.setCurrentModel(preferences.model);
       this.store.setThinkingMode(preferences.reasoning);
+      this.store.setFastModeEnabled(preferences.fastModeEnabled);
       this.store.setPermissionMode(preferences.permissions);
       this.store.setAutoCompactEnabled(preferences.autoCompactEnabled);
     }
@@ -655,6 +657,7 @@ export class AgentApp {
     void saveYetPreferences({
       model: this.state.currentModel,
       reasoning: this.state.thinkingMode,
+      fastModeEnabled: this.state.fastModeEnabled,
       permissions: this.state.permissionMode,
       autoCompactEnabled: this.state.autoCompactEnabled,
     });
@@ -671,6 +674,13 @@ export class AgentApp {
 
   private setThinkingMode(thinkingMode: AgentState['thinkingMode']) {
     this.store.setThinkingMode(thinkingMode);
+    this.persistPreferences();
+    this.recordTurnContext();
+    this.render();
+  }
+
+  private setFastModeEnabled(enabled: boolean) {
+    this.store.setFastModeEnabled(enabled);
     this.persistPreferences();
     this.recordTurnContext();
     this.render();
@@ -899,6 +909,7 @@ export class AgentApp {
         force,
         model: this.state.currentModel,
         thinkingMode: this.state.thinkingMode,
+        fastModeEnabled: this.state.fastModeEnabled,
       });
       this.store.replaceMessages(result.messages);
       this.store.setLastUsage(result.usage);
@@ -1110,6 +1121,7 @@ export class AgentApp {
             compactConversation: options => this.compactConversation(options),
             setCurrentModel: model => this.setCurrentModel(model),
             setThinkingMode: thinkingMode => this.setThinkingMode(thinkingMode),
+            setFastModeEnabled: enabled => this.setFastModeEnabled(enabled),
             setPermissionMode: permissionMode => this.setPermissionMode(permissionMode),
             setPlanningMode: enabled => this.setPlanningMode(enabled),
             enqueueSubmission: (text, options) => this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
@@ -1219,6 +1231,7 @@ export class AgentApp {
       const result = await runAgentLoop({
         model: this.state.currentModel,
         thinkingMode: this.state.thinkingMode,
+        fastModeEnabled: this.state.fastModeEnabled,
         messages: runtimeMessages,
         tools: this.getActiveTools(),
         maxSteps: 20,
