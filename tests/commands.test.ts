@@ -9,6 +9,7 @@ import { resolveInputBinding, splitInputEvents } from '@/agent/keybinds';
 import { createAgentStore } from '@/store';
 import { renderConfigPicker } from '@/render/components/config-picker';
 import { renderHistoryEntry } from '@/render/components/entry';
+import { renderSuggestions } from '@/render/components/suggestions';
 import { renderStatusPanel } from '@/render/components/status-panel';
 import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/components/transcript-overlay';
 import { createRenderContext, serializeBlock } from '@/render';
@@ -214,6 +215,26 @@ await resumeCommand.execute(
   { raw: '/resume', invocation: 'resume', argsText: '', argv: [] },
 );
 equal(openedResumeArguments, 'resume', 'bare /resume opens the inline composer picker');
+
+const resumeFilterSuggestion = suggestionRegistry.listSuggestions({
+  type: 'invocation',
+  query: 'resume',
+});
+const resumeFilterContext = createRenderContext(createTheme(), false, 80, 20);
+const projectFilter = serializeBlock(
+  renderSuggestions(resumeFilterSuggestion, 0, resumeFilterContext, 'current'),
+).at(-1)?.trim();
+const allFilter = serializeBlock(
+  renderSuggestions(resumeFilterSuggestion, 0, resumeFilterContext, 'all'),
+).at(-1)?.trim();
+check(
+  /^\(1\/\d+\) · \[project\] all · tab to switch$/.test(projectFilter ?? ''),
+  'resume shows pagination and the compact project filter',
+);
+check(
+  /^\(1\/\d+\) · project \[all\] · tab to switch$/.test(allFilter ?? ''),
+  'resume shows pagination and the compact all-sessions filter',
+);
 
 const resumeApp = new AgentApp();
 const resumeAppInternals = resumeApp as unknown as {

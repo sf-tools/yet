@@ -202,6 +202,24 @@ function sanitizeHistoryEntriesForResume(entries: HistoryEntry[]): HistoryEntry[
   });
 }
 
+function removeLegacySessionSwitchHandoffs(
+  entries: HistoryEntry[],
+  parentSessionId?: string,
+): HistoryEntry[] {
+  const parentResumeCommand = parentSessionId ? `yet resume ${parentSessionId}` : null;
+  const isInvalidResumeHint = (entry: HistoryEntry | undefined) =>
+    entry?.type === 'resume_hint' && entry.command !== parentResumeCommand;
+
+  return entries.filter((entry, index) => {
+    if (isInvalidResumeHint(entry)) return false;
+    return !(
+      entry.type === 'plain' &&
+      entry.text.startsWith('Token usage: ') &&
+      isInvalidResumeHint(entries[index + 1])
+    );
+  });
+}
+
 function sanitizeMessagesForResume(messages: AgentMessage[]): AgentMessage[] {
   const completedToolCalls = new Set(
     messages.flatMap(message => (message.role === 'tool-result' ? [message.callId] : [])),
@@ -245,7 +263,12 @@ export function hydratePersistedState(persisted: PersistedSessionState): AgentSt
 }
 
 export function hydrateStateFromSession(session: LoadedYetSession): AgentState {
-  return hydratePersistedState(session.state);
+  const state = hydratePersistedState(session.state);
+  state.historyEntries = removeLegacySessionSwitchHandoffs(
+    state.historyEntries,
+    session.parentSessionId,
+  );
+  return state;
 }
 
 function firstUserPreview(entries: HistoryEntry[]) {

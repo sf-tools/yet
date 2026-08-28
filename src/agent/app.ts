@@ -76,7 +76,6 @@ import {
   type AgentUsage,
 } from './messages';
 import { runAgentLoop } from './runner';
-import { formatSessionUsage, sessionUsageIsZero } from './session-summary';
 import { BlockStreamPump } from './block-stream';
 import {
   isPotentiallyUnsafeCommand,
@@ -504,9 +503,7 @@ export class AgentApp {
           suggestions,
           this.state.selectedSuggestion,
           ctx,
-          this.isInlineResumePickerOpen()
-            ? `${this.resumeSessionScope === 'current' ? 'Current workspace' : 'All sessions'} · tab: ${this.resumeSessionScope === 'current' ? 'all sessions' : 'current workspace'}`
-            : undefined,
+          this.isInlineResumePickerOpen() ? this.resumeSessionScope : undefined,
         );
     const footer = choicePrompt || configPicker || statusPanel || textPrompt || suggestionLines.length > 0
       ? []
@@ -1029,8 +1026,6 @@ export class AgentApp {
       return;
     }
 
-    const previousSessionId = this.sessionId;
-    const previousSessionUsage = { ...this.state.sessionUsage };
     const session = await loadYetSession(sessionId);
     if (!session) throw new Error(`No saved session found for id '${sessionId}'.`);
     const nextRecorder = await SessionRecorder.open({
@@ -1063,12 +1058,6 @@ export class AgentApp {
     this.preferredComposerColumn = null;
     this.sessionFileBaselines.clear();
     this.store.replaceState(hydrateStateFromSession(session));
-    this.persistHistoryEntries([
-      ...(!sessionUsageIsZero(previousSessionUsage)
-        ? [{ type: 'plain' as const, text: formatSessionUsage(previousSessionUsage) }]
-        : []),
-      { type: 'resume_hint', command: `yet resume ${previousSessionId}` },
-    ]);
     this.resetRenderedScreen();
     this.render();
     this.showFooterNotice(`Switched to ${this.threadTitle ?? 'Untitled thread'}`);

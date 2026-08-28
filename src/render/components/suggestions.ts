@@ -11,7 +11,7 @@ export function renderSuggestions(
   suggestions: ComposerSuggestion[],
   selectedSuggestion: number,
   ctx: RenderContext,
-  footerHint?: string,
+  resumeScope?: 'current' | 'all',
 ): Block {
   if (suggestions.length === 0) return [];
 
@@ -221,15 +221,31 @@ export function renderSuggestions(
   });
 
   lines.push(
-    line(
-      span(`${margin}  `),
-      span(
-        footerHint
-          ? `${Math.min(selectedSuggestion + 1, suggestions.length)} of ${suggestions.length} · ${footerHint}`
-          : `(${Math.min(selectedSuggestion + 1, suggestions.length)}/${suggestions.length})`,
-        ctx.theme.dimmed,
-      ),
-    ),
+    resumeScope
+      ? line(
+          span(`${margin}  `),
+          span(
+            `(${Math.min(selectedSuggestion + 1, suggestions.length)}/${suggestions.length}) · `,
+            ctx.theme.dimmed,
+          ),
+          span(
+            resumeScope === 'current' ? '[project]' : 'project',
+            resumeScope === 'current' ? chalk.magentaBright : ctx.theme.dimmed,
+          ),
+          span(' '),
+          span(
+            resumeScope === 'all' ? '[all]' : 'all',
+            resumeScope === 'all' ? chalk.magentaBright : ctx.theme.dimmed,
+          ),
+          span(' · tab to switch', ctx.theme.dimmed),
+        )
+      : line(
+          span(`${margin}  `),
+          span(
+            `(${Math.min(selectedSuggestion + 1, suggestions.length)}/${suggestions.length})`,
+            ctx.theme.dimmed,
+          ),
+        ),
   );
   return lines;
 }

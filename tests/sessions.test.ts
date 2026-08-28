@@ -316,6 +316,33 @@ try {
     ),
     'a fork persists the parent resume hint',
   );
+  check(
+    hydrateStateFromSession(forked).historyEntries.some(
+      entry => entry.type === 'resume_hint' && entry.command === `yet resume ${loaded.sessionId}`,
+    ),
+    'resuming a fork preserves its parent resume hint',
+  );
+  const legacySwitchState = hydrateStateFromSession({
+    ...loaded,
+    state: {
+      ...loaded.state,
+      historyEntries: [
+        ...loaded.state.historyEntries,
+        { type: 'plain', text: 'Token usage: total=1 input=1 output=0' },
+        { type: 'resume_hint', command: 'yet resume previous-session' },
+      ],
+    },
+  });
+  check(
+    !legacySwitchState.historyEntries.some(entry => entry.type === 'resume_hint'),
+    'resuming a root session drops legacy cross-session handoffs',
+  );
+  check(
+    !legacySwitchState.historyEntries.some(
+      entry => entry.type === 'plain' && entry.text.startsWith('Token usage: '),
+    ),
+    'resuming a root session drops token usage attached to a legacy handoff',
+  );
   const indexedFork = (await listYetSessions({ yetHome: sessionHome })).find(
     entry => entry.sessionId === 'forked-session',
   );
