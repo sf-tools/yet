@@ -1,4 +1,5 @@
 import { createInitialState } from './state';
+import { imageTokenRangeAt } from '@/agent/image-tokens';
 
 import type { AgentMessage } from '@/agent/messages';
 import type {
@@ -374,6 +375,20 @@ function buildAgentStore(initialState: AgentState) {
       return state;
     },
 
+    moveCursor(delta: number) {
+      if (delta === 0) return state;
+
+      const direction = delta < 0 ? 'backward' : 'forward';
+      const imageRange = imageTokenRangeAt(state.inputChars, state.cursor, direction);
+      if (imageRange) {
+        state.cursor = direction === 'backward' ? imageRange.start : imageRange.end;
+        return state;
+      }
+
+      state.cursor = clamp(state.cursor + delta, 0, state.inputChars.length);
+      return state;
+    },
+
     replaceInput(text: string, cursor = text.length) {
       state.inputChars.splice(0, state.inputChars.length, ...Array.from(text));
       state.pasteRanges.length = 0;
@@ -436,6 +451,18 @@ function buildAgentStore(initialState: AgentState) {
         return removePasteRange(state, pasteRange);
       }
 
+      const imageRange = imageTokenRangeAt(state.inputChars, state.cursor, 'backward');
+      if (imageRange) {
+        const length = imageRange.end - imageRange.start;
+        for (let index = 0; index < length; index += 1) {
+          shiftPasteRangesForDelete(state, imageRange.start);
+        }
+        state.inputChars.splice(imageRange.start, length);
+        prunePasteRanges(state);
+        state.cursor = imageRange.start;
+        return true;
+      }
+
       state.inputChars.splice(state.cursor - 1, 1);
       shiftPasteRangesForDelete(state, state.cursor - 1);
       prunePasteRanges(state);
@@ -452,6 +479,18 @@ function buildAgentStore(initialState: AgentState) {
       if (pasteRange) {
         state.cursor = pasteRange.start;
         return removePasteRange(state, pasteRange);
+      }
+
+      const imageRange = imageTokenRangeAt(state.inputChars, state.cursor, 'forward');
+      if (imageRange) {
+        const length = imageRange.end - imageRange.start;
+        for (let index = 0; index < length; index += 1) {
+          shiftPasteRangesForDelete(state, imageRange.start);
+        }
+        state.inputChars.splice(imageRange.start, length);
+        prunePasteRanges(state);
+        state.cursor = imageRange.start;
+        return true;
       }
 
       state.inputChars.splice(state.cursor, 1);

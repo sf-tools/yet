@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 
+import { imageTokenRanges } from '@/agent/image-tokens';
 import { repeat, widthOf } from '@/text';
 import { thinPanelize } from '../layout';
 import { line, span } from '../primitives';
@@ -52,6 +53,7 @@ function renderInputLines(
   let segments: StyledLine['segments'] = [];
   let currentWidth = 0;
   const pasteRanges = [...state.pasteRanges].sort((left, right) => left.start - right.start || left.end - right.end);
+  const imageRanges = imageTokenRanges(state.inputChars);
 
   const flushLine = (allowEmpty = false) => {
     if (segments.length === 0 && !allowEmpty) return;
@@ -71,6 +73,7 @@ function renderInputLines(
 
   let pasteIndex = 0;
   let pasteCount = 0;
+  let imageIndex = 0;
 
   for (let index = 0; index < state.inputChars.length; index += 1) {
     const range = pasteRanges[pasteIndex];
@@ -82,6 +85,18 @@ function renderInputLines(
       pushChar(label, state.cursor >= range.start && state.cursor < range.end ? chalk.inverse : undefined);
       index = range.end - 1;
       pasteIndex += 1;
+      continue;
+    }
+
+    while (imageRanges[imageIndex] && imageRanges[imageIndex].end <= index) imageIndex += 1;
+    const imageRange = imageRanges[imageIndex];
+    if (imageRange && index === imageRange.start) {
+      const style = state.cursor >= imageRange.start && state.cursor < imageRange.end
+        ? chalk.cyanBright.inverse
+        : chalk.cyanBright;
+      pushChar(imageRange.label, style);
+      index = imageRange.end - 1;
+      imageIndex += 1;
       continue;
     }
 
@@ -116,8 +131,10 @@ function buildCursorMap(state: ComposerState, viewWidth: number) {
     col: 0,
   }));
   const pasteRanges = [...state.pasteRanges].sort((left, right) => left.start - right.start || left.end - right.end);
+  const imageRanges = imageTokenRanges(state.inputChars);
   let pasteIndex = 0;
   let pasteCount = 0;
+  let imageIndex = 0;
   let row = 0;
   let col = 0;
 
@@ -146,6 +163,15 @@ function buildCursorMap(state: ComposerState, viewWidth: number) {
       placeToken(range.start, range.end, `[paste #${pasteCount} +${extraLines} lines]`);
       index = range.end - 1;
       pasteIndex += 1;
+      continue;
+    }
+
+    while (imageRanges[imageIndex] && imageRanges[imageIndex].end <= index) imageIndex += 1;
+    const imageRange = imageRanges[imageIndex];
+    if (imageRange && index === imageRange.start) {
+      placeToken(imageRange.start, imageRange.end, imageRange.label);
+      index = imageRange.end - 1;
+      imageIndex += 1;
       continue;
     }
 

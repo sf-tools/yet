@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 
+import { displayImageTokens } from '@/agent/image-tokens';
 import { LEFT_MARGIN } from '../layout';
 import { blankLine, line, span } from '../primitives';
 import { widthOf } from '@/text';
@@ -163,7 +164,7 @@ function renderMessages(
   const availableWidth = Math.max(1, ctx.width - widthOf('  ↳ '));
 
   for (const submission of submissions) {
-    const text = submission.text.trim() || '(empty message)';
+    const text = displayImageTokens(submission.text.trim()) || '(empty message)';
     const wrapped = text
       .split('\n')
       .slice(0, PREVIEW_LINE_LIMIT + 1)

@@ -5,9 +5,11 @@ import { homedir } from 'node:os';
 import { basename, extname, join } from 'node:path';
 
 import { IMAGE_MEDIA_TYPES } from './path-detect';
+import { extractImageTokens, IMAGE_TOKEN_PATTERN } from './image-tokens';
 
-export const IMAGE_TOKEN_PATTERN = /\[image:([a-f0-9]{8})\]/g;
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+export { IMAGE_TOKEN_PATTERN } from './image-tokens';
 
 const ATTACHMENT_DIR = join(homedir(), '.yet', 'attachments');
 
@@ -125,21 +127,6 @@ export function findAttachment(token: string): Attachment | undefined {
   return attachments.get(token);
 }
 
-export function summarizeAttachment(attachment: Attachment): string {
-  const sizeKb = (attachment.bytes / 1024).toFixed(1);
-  const dim = attachment.dimensions ? ` · ${attachment.dimensions.width}×${attachment.dimensions.height}` : '';
-  return `[image · ${attachment.originalName}${dim} · ${sizeKb} KB]`;
-}
-
-export function replaceTokensWithSummary(text: string): string {
-  return text.replace(IMAGE_TOKEN_PATTERN, (match, hash: string) => {
-    const attachment = attachments.get(`[image:${hash}]`);
-    return attachment ? summarizeAttachment(attachment) : match;
-  });
-}
-
 export function extractTokens(text: string): string[] {
-  const tokens: string[] = [];
-  for (const match of text.matchAll(IMAGE_TOKEN_PATTERN)) tokens.push(match[0]);
-  return tokens;
+  return extractImageTokens(text);
 }

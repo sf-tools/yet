@@ -14,7 +14,44 @@ export type HistoryEntryRenderOptions = {
 };
 
 function renderUserEntry(text: string, ctx: RenderContext): Block {
-  return thinPanelize(wrapTextBlock(text, Math.max(1, ctx.width - 2), ctx.theme.foreground), {
+  const width = Math.max(1, ctx.width - 2);
+  const lines: StyledLine[] = [];
+  let segments: StyledLine['segments'] = [];
+  let currentWidth = 0;
+
+  const flushLine = (allowEmpty = false) => {
+    if (segments.length === 0 && !allowEmpty) return;
+    lines.push(line(...segments));
+    segments = [];
+    currentWidth = 0;
+  };
+
+  const pushText = (value: string, style: Style) => {
+    const valueWidth = Math.max(1, widthOf(value));
+    if (segments.length > 0 && currentWidth + valueWidth > width) flushLine();
+    segments.push(span(value, style));
+    currentWidth += valueWidth;
+  };
+
+  for (const part of text.split(/(\[Image #\d+\])/g)) {
+    if (!part) continue;
+    if (/^\[Image #\d+\]$/.test(part)) {
+      pushText(part, chalk.cyanBright);
+      continue;
+    }
+
+    for (const ch of Array.from(part)) {
+      if (ch === '\n') {
+        flushLine(true);
+        continue;
+      }
+      pushText(ch, ctx.theme.foreground);
+    }
+  }
+
+  flushLine(true);
+
+  return thinPanelize(lines, {
     bg: ctx.theme.panelBg(),
     width: ctx.width,
   });

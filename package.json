@@ -37,6 +37,7 @@
   },
   "dependencies": {
     "@lydell/node-pty": "^1.2.0-beta.15",
+    "@mariozechner/clipboard": "^0.3.9",
     "approximate-number": "^3.0.1",
     "chalk": "^6.0.0",
     "markdown-it": "^15.0.0",

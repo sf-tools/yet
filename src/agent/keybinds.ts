@@ -2,6 +2,7 @@ import parseKeypress, { nonAlphanumericKeys } from '@/keypress';
 
 export type InputBinding =
   | { type: 'interrupt' }
+  | { type: 'pasteImage' }
   | { type: 'escape' }
   | { type: 'toggleThinkingMode' }
   | { type: 'togglePreviews' }
@@ -21,6 +22,7 @@ type ParsedKeypress = {
   ctrl?: boolean;
   meta?: boolean;
   shift?: boolean;
+  eventType?: 'press' | 'repeat' | 'release';
   sequence: string;
   isKittyProtocol?: boolean;
   isPrintable?: boolean;
@@ -48,6 +50,13 @@ export function resolveInputBinding(data: Buffer | string): InputBinding | null 
   const keypress = parseKeypress(data) as ParsedKeypress;
   const input = decodeInput(keypress);
 
+  if (
+    input.toLowerCase() === 'v' &&
+    (keypress.ctrl || keypress.meta) &&
+    (keypress.eventType === undefined || keypress.eventType === 'press')
+  ) {
+    return { type: 'pasteImage' };
+  }
   if (input === 'c' && keypress.ctrl) return { type: 'interrupt' };
   if (keypress.name === 'escape') return { type: 'escape' };
   if (input === 'o' && keypress.ctrl) return { type: 'togglePreviews' };

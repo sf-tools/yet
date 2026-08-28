@@ -20,6 +20,7 @@ import { renderChoicePrompt, renderOutputPreview } from '@/render/components/tra
 import { renderPendingInput } from '@/render/components/pending-input';
 import { IMAGE_MEDIA_TYPES, parseDroppedImagePaths } from './path-detect';
 import { copyTextToClipboard } from './clipboard-text';
+import { readClipboardImage } from './clipboard-image';
 import { createFileChange, readOptionalFile } from '@/file-changes';
 import { builtinSlashCommands, createSlashCommandRegistry } from './slash-commands';
 import {
@@ -37,7 +38,8 @@ import { renderComposer, moveComposerCursorVertical } from '@/render/components/
 import { acceptComposerSuggestion, listComposerSuggestions } from './composer-suggestions';
 import { createAgentStore, type AgentState, type AgentStore, type QueuedSubmission } from '@/store';
 
-import { attachFromPath, extractTokens, findAttachment, IMAGE_TOKEN_PATTERN, replaceTokensWithSummary, type Attachment } from './image-attachments';
+import { attachFromBytes, attachFromPath, extractTokens, findAttachment, IMAGE_TOKEN_PATTERN, type Attachment } from './image-attachments';
+import { displayImageTokens } from './image-tokens';
 
 import { createRenderContext, frameWidth, renderExitSummary, renderHeader, serializeBlock } from '@/render';
 
@@ -170,6 +172,7 @@ export class AgentApp {
   private bracketedPasteActive = false;
   private bracketedPasteBuffer = '';
   private stdinBuffer = '';
+  private stdinTask: Promise<void> = Promise.resolve();
   private skills: SkillMetadata[] = [];
 
   private clearTransientBlock() {
@@ -1078,7 +1081,7 @@ export class AgentApp {
       }
 
       messages.push(...steer.messages);
-      this.persistEntry(EntryKind.User, replaceTokensWithSummary(steer.trimmed));
+      this.persistEntry(EntryKind.User, displayImageTokens(steer.trimmed));
       this.recordSessionEvent({
         type: 'user_message',
         payload: { messages: steer.messages },
@@ -1138,6 +1141,8 @@ export class AgentApp {
         } catch {
           parts.push({ type: 'text', text: `[image unavailable: ${attachment.originalName}]` });
         }
+      } else {
+        parts.push({ type: 'text', text: match[0] });
       }
       cursor = matchStart + match[0].length;
     }
@@ -1277,7 +1282,7 @@ export class AgentApp {
     }
 
     await this.promptHistory.add(trimmed, process.cwd());
-    const displayedUserMessage = replaceTokensWithSummary(trimmed);
+    const displayedUserMessage = displayImageTokens(trimmed);
     this.startThreadTitleGeneration(displayedUserMessage);
     this.recordTurnContext();
     this.persistEntry(EntryKind.User, displayedUserMessage);
@@ -1723,6 +1728,27 @@ export class AgentApp {
     this.render();
   }
 
+  private async pasteClipboardImage() {
+    try {
+      const image = await readClipboardImage();
+      const attachment = await attachFromBytes(
+        image.bytes,
+        image.mediaType,
+        image.originalName,
+      );
+      this.historyNavigationIndex = null;
+      this.resetPreferredComposerColumn();
+      this.store.insertText(attachment.token);
+      this.store.resetSelectedSuggestion();
+      this.render();
+    } catch (error) {
+      this.persistEntry(
+        EntryKind.Error,
+        `Failed to paste image: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
   private tryAttachDroppedImages(text: string): boolean {
     const dropped = parseDroppedImagePaths(text, process.cwd());
     if (!dropped) return false;
@@ -1904,6 +1930,11 @@ export class AgentApp {
   private handleInputBinding = async (binding: ReturnType<typeof resolveInputBinding>) => {
     if (!binding) return;
 
+    if (binding.type === 'pasteImage') {
+      await this.pasteClipboardImage();
+      return;
+    }
+
     if (binding.type === 'interrupt') {
       if (this.interruptActiveTurn(false)) {
         this.render();
@@ -1955,7 +1986,7 @@ export class AgentApp {
         await this.moveInputHistory(-1);
       } else {
         this.resetPreferredComposerColumn();
-        this.store.setCursor(this.state.cursor - 1);
+        this.store.moveCursor(-1);
         this.render();
       }
       return;
@@ -1983,7 +2014,7 @@ export class AgentApp {
         return;
       case 'moveCursor':
         this.resetPreferredComposerColumn();
-        this.store.setCursor(this.state.cursor + binding.delta);
+        this.store.moveCursor(binding.delta);
         this.render();
         return;
       case 'cursorHome':
@@ -2004,10 +2035,6 @@ export class AgentApp {
     }
   };
 
-  private onInputBinding = async (chunk: Buffer | string) => {
-    await this.handleInputBinding(resolveInputBinding(chunk));
-  };
-
   private processNonPasteInput = async (text: string) => {
     if (!text) return;
 
@@ -2020,45 +2047,53 @@ export class AgentApp {
     if (!text.includes('\u001b')) this.insertText(text);
   };
 
+  private drainStdinBuffer = async () => {
+    while (this.stdinBuffer.length > 0) {
+      if (this.bracketedPasteActive) {
+        const endIndex = this.stdinBuffer.indexOf(BRACKETED_PASTE_END);
+        if (endIndex === -1) {
+          this.bracketedPasteBuffer += this.stdinBuffer;
+          this.stdinBuffer = '';
+          return;
+        }
+
+        this.bracketedPasteBuffer += this.stdinBuffer.slice(0, endIndex);
+        this.stdinBuffer = this.stdinBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
+        this.bracketedPasteActive = false;
+        this.insertPastedText(this.bracketedPasteBuffer);
+        this.bracketedPasteBuffer = '';
+        continue;
+      }
+
+      const startIndex = this.stdinBuffer.indexOf(BRACKETED_PASTE_START);
+      if (startIndex !== -1) {
+        const before = this.stdinBuffer.slice(0, startIndex);
+        this.stdinBuffer = this.stdinBuffer.slice(startIndex + BRACKETED_PASTE_START.length);
+        if (before) await this.processNonPasteInput(before);
+        this.bracketedPasteActive = true;
+        this.bracketedPasteBuffer = '';
+        continue;
+      }
+
+      const suffixLength = bracketedPasteSuffixLength(this.stdinBuffer);
+      const complete = this.stdinBuffer.slice(0, this.stdinBuffer.length - suffixLength);
+      this.stdinBuffer = this.stdinBuffer.slice(this.stdinBuffer.length - suffixLength);
+
+      if (complete) await this.processNonPasteInput(complete);
+      return;
+    }
+  };
+
   private onStdinData = (chunk: Buffer | string) => {
     const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
     this.stdinBuffer += text;
-
-    void (async () => {
-      while (this.stdinBuffer.length > 0) {
-        if (this.bracketedPasteActive) {
-          const endIndex = this.stdinBuffer.indexOf(BRACKETED_PASTE_END);
-          if (endIndex === -1) {
-            this.bracketedPasteBuffer += this.stdinBuffer;
-            this.stdinBuffer = '';
-            return;
-          }
-
-          this.bracketedPasteBuffer += this.stdinBuffer.slice(0, endIndex);
-          this.stdinBuffer = this.stdinBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
-          this.bracketedPasteActive = false;
-          this.insertPastedText(this.bracketedPasteBuffer);
-          this.bracketedPasteBuffer = '';
-          continue;
-        }
-
-        const startIndex = this.stdinBuffer.indexOf(BRACKETED_PASTE_START);
-        if (startIndex !== -1) {
-          const before = this.stdinBuffer.slice(0, startIndex);
-          this.stdinBuffer = this.stdinBuffer.slice(startIndex + BRACKETED_PASTE_START.length);
-          if (before) await this.processNonPasteInput(before);
-          this.bracketedPasteActive = true;
-          this.bracketedPasteBuffer = '';
-          continue;
-        }
-
-        const suffixLength = bracketedPasteSuffixLength(this.stdinBuffer);
-        const complete = this.stdinBuffer.slice(0, this.stdinBuffer.length - suffixLength);
-        this.stdinBuffer = this.stdinBuffer.slice(this.stdinBuffer.length - suffixLength);
-
-        if (complete) await this.processNonPasteInput(complete);
-        return;
-      }
-    })();
+    this.stdinTask = this.stdinTask
+      .then(this.drainStdinBuffer)
+      .catch(error => {
+        this.persistEntry(
+          EntryKind.Error,
+          `Failed to process input: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
   };
 }

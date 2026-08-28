@@ -41,6 +41,9 @@ import {
   THREAD_TITLE_PROMPT_MAX_BYTES,
 } from '@/agent/thread-title';
 import { EntryKind } from '@/types';
+import { readClipboardImage } from '@/agent/clipboard-image';
+import { displayImageTokens } from '@/agent/image-tokens';
+import { resolveInputBinding } from '@/agent/keybinds';
 import {
   BLOCK_STREAM_CATCH_UP_AGE_MS,
   BLOCK_STREAM_CATCH_UP_LINES,
@@ -91,6 +94,47 @@ deepEqual(
   'supported model list is exact',
 );
 equal(getOpenAIProviderModelId('gpt-daybreak-blue-latest'), 'daybreak-blue-latest', 'daybreak model maps to its provider ID');
+
+deepEqual(resolveInputBinding(Buffer.from([0x16])), { type: 'pasteImage' }, 'ctrl+v requests an image paste');
+deepEqual(resolveInputBinding('\u001bv'), { type: 'pasteImage' }, 'alt+v requests an image paste');
+deepEqual(
+  resolveInputBinding('\u001b[118;5:1u'),
+  { type: 'pasteImage' },
+  'kitty ctrl+v press requests one image paste',
+);
+equal(resolveInputBinding('\u001b[118;5:2u'), null, 'kitty ctrl+v repeat does not duplicate the image');
+equal(resolveInputBinding('\u001b[118;5:3u'), null, 'kitty ctrl+v release does not duplicate the image');
+
+const clipboardPng = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const pastedClipboardImage = await readClipboardImage({
+  hasImage: () => true,
+  getImageBinary: async () => clipboardPng,
+});
+deepEqual(Array.from(pastedClipboardImage.bytes), clipboardPng, 'clipboard PNG bytes are retained');
+equal(pastedClipboardImage.mediaType, 'image/png', 'clipboard images use the provider-neutral PNG media type');
+await rejects(
+  readClipboardImage({
+    hasImage: () => false,
+    getImageBinary: async () => clipboardPng,
+  }),
+  /no image on clipboard/,
+  'an empty image clipboard reports a clear failure',
+);
+
+const imageToken = '[image:12345678]';
+equal(
+  displayImageTokens(`${imageToken}${imageToken}`),
+  '[Image #1][Image #2]',
+  'composer image tokens use compact numbered labels',
+);
+const imageTokenStore = createAgentStore();
+imageTokenStore.replaceInput(`${imageToken} tail`, imageToken.length);
+imageTokenStore.moveCursor(-1);
+equal(imageTokenStore.getState().cursor, 0, 'left arrow moves across an image token atomically');
+imageTokenStore.moveCursor(1);
+equal(imageTokenStore.getState().cursor, imageToken.length, 'right arrow moves across an image token atomically');
+check(imageTokenStore.deleteBackward(), 'backspace deletes an image token');
+equal(imageTokenStore.getState().inputChars.join(''), ' tail', 'backspace removes the complete image token');
 
 const fuzzyFileEntries = [
   { kind: 'file' as const, label: 'ant.lockb', name: 'ant.lockb', searchPath: 'ant.lockb' },
