@@ -23,8 +23,8 @@ function normalizeText(text: string | undefined, fallback: string) {
   return text?.replace(/\s+/g, ' ').trim() || fallback;
 }
 
-function listOtherWorkspaceSessions(currentSessionId: string) {
-  return listYetSessionsSync({ cwd: process.cwd() }).filter(
+function listOtherSessions(currentSessionId: string, scope: 'current' | 'all') {
+  return listYetSessionsSync(scope === 'current' ? { cwd: process.cwd() } : {}).filter(
     session => session.sessionId !== currentSessionId,
   );
 }
@@ -44,14 +44,15 @@ export const resumeSlashCommand: SlashCommand = {
   name: 'resume',
   description: 'Resume another saved session.',
   showBusyIndicator: false,
-  argumentSuggestions: ({ getSessionId }) =>
-    listOtherWorkspaceSessions(getSessionId()).map(createSessionSuggestion),
-  async execute({ getSessionId, openResumePicker, switchToSession }, args) {
+  showArgumentSuggestionsOnExactInvocation: true,
+  argumentSuggestions: ({ getSessionId, getResumeSessionScope }) =>
+    listOtherSessions(getSessionId(), getResumeSessionScope()).map(createSessionSuggestion),
+  async execute({ getSessionId, openCommandArgumentPicker, switchToSession }, args) {
     if (args.argv.length > 1) throw new Error(`/${args.invocation} accepts at most one argument`);
 
     const requested = args.argv[0];
     if (!requested) {
-      await openResumePicker();
+      openCommandArgumentPicker('resume');
       return;
     }
 

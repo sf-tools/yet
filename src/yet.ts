@@ -9,6 +9,7 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
 }
 
 let resumeId: string | undefined;
+let initialComposer: string | undefined;
 if (cli.resume) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     process.stderr.write("'yet resume' requires an interactive terminal.\n");
@@ -34,24 +35,7 @@ if (cli.resume) {
       }
       resumeId = sessions[0].sessionId;
     } else {
-      const { selectYetResumeSession } = await import('@/resume-selector');
-      const selection = await selectYetResumeSession({
-        workspacePath: process.cwd(),
-        showAll: cli.resume.showAll,
-        activeSessions: sessions,
-      });
-      if (selection.action === 'cancel') process.exit(0);
-      if (selection.action === 'resume') {
-        if (selection.session.archivedAt) {
-          const { restoreYetSession } = await import('@/agent/session-storage');
-          const restored = await restoreYetSession(selection.session.sessionId);
-          if (!restored) {
-            process.stderr.write(`Could not restore session '${selection.session.sessionId}'.\n`);
-            process.exit(1);
-          }
-        }
-        resumeId = selection.session.sessionId;
-      }
+      initialComposer = '/resume';
     }
   }
 }
@@ -73,6 +57,8 @@ const { AgentApp } = await import('@/agent/app');
 const app = new AgentApp({
   initialState,
   initialPrompt: cli.prompt,
+  initialComposer,
+  resumeSessionScope: cli.resume?.showAll ? 'all' : 'current',
   sessionId: resumeSession?.sessionId,
   threadTitle: resumeSession?.name,
   rolloutPath: resumeSession?.rolloutPath,

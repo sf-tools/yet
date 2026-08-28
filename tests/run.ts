@@ -2,7 +2,6 @@ import './input.test';
 import './commands.test';
 import './rendering.test';
 import './cli.test';
-import './resume.test';
 import './tools.test';
 import './titles.test';
 import './sessions.test';

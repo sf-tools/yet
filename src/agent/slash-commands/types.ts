@@ -11,6 +11,8 @@ export type SlashCommandArgs = {
   argv: string[];
 };
 
+export type ResumeSessionScope = 'current' | 'all';
+
 export type SlashCommandContext = {
   store: AgentStore;
   cleanup(code?: number): void;
@@ -26,7 +28,6 @@ export type SlashCommandContext = {
   setPlanningMode(enabled: boolean): void;
   enqueueSubmission(text: string, options?: { planningMode?: boolean }): void;
   openCommandArgumentPicker(commandName: string): void;
-  openResumePicker(): Promise<void>;
   openConfigPicker(): Promise<void>;
   openStatusPanel(panel: StatusPanelState): Promise<void>;
   requestChoice(request: ChoiceRequest): Promise<ChoiceSelection | null>;
@@ -34,6 +35,7 @@ export type SlashCommandContext = {
   showFooterNotice(text: string, durationMs?: number): void;
   getActiveToolSummaries(): Array<{ names: string[]; description: string | null }>;
   getSessionId(): string;
+  getResumeSessionScope(): ResumeSessionScope;
   switchToSession(sessionId: string): Promise<void>;
   getLastRequestId(): string | null;
   getLastAssistantResponse(): string | null;
@@ -65,7 +67,7 @@ export type SlashCommandArgumentSuggestion =
 
 export type SlashCommandSuggestionContext = Pick<
   SlashCommandContext,
-  'getSessionId'
+  'getSessionId' | 'getResumeSessionScope'
 > & {
   getCurrentModel(): string;
 };

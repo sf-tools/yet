@@ -11,6 +11,7 @@ export function renderSuggestions(
   suggestions: ComposerSuggestion[],
   selectedSuggestion: number,
   ctx: RenderContext,
+  footerHint?: string,
 ): Block {
   if (suggestions.length === 0) return [];
 
@@ -223,7 +224,7 @@ export function renderSuggestions(
     line(
       span(`${margin}  `),
       span(
-        `(${Math.min(selectedSuggestion + 1, suggestions.length)}/${suggestions.length})`,
+        `(${Math.min(selectedSuggestion + 1, suggestions.length)}/${suggestions.length})${footerHint ? ` · ${footerHint}` : ''}`,
         ctx.theme.dimmed,
       ),
     ),

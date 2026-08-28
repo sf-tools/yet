@@ -6,6 +6,7 @@ export { archiveSlashCommand } from './builtins/archive';
 
 export type {
   ResolvedSlashCommand,
+  ResumeSessionScope,
   SlashCommand,
   SlashCommandArgs,
   SlashCommandContext,

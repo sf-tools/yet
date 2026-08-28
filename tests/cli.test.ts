@@ -62,7 +62,7 @@ const resumePickerCli = handleCliArgs(['resume']);
 deepEqual(
   resumePickerCli,
   { kind: 'start', resume: { last: false, showAll: false } },
-  'the positional resume command opens the session picker',
+  'the positional resume command opens the inline picker',
 );
 const namedResumeCli = handleCliArgs(['resume', 'Durable events', 'continue', 'working']);
 deepEqual(

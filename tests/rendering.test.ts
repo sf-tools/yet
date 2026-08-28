@@ -220,6 +220,20 @@ equal(
   ' • Model interrupted to submit steer instructions.',
   'steer interruption renders as a Codex info cell',
 );
+equal(
+  serializeBlock(
+    renderHistoryEntry(
+      {
+        type: 'entry',
+        kind: EntryKind.Meta,
+        text: 'Stopping all background terminals.',
+      },
+      renderContext,
+    ),
+  ).join('\n'),
+  ' • Stopping all background terminals.',
+  'background terminal cleanup renders as a compact info cell',
+);
 const waitingState = createAgentStore().getState();
 waitingState.busy = true;
 waitingState.backgroundWaitCommand = 'npm test';

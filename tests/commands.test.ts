@@ -201,27 +201,33 @@ await statusAppInternals.handleInputBinding({ type: 'escape' });
 equal(statusAppInternals.store.getState().statusPanel, null, 'escape closes /status');
 await statusAppInternals.activeSubmissionTask;
 
+const resumeCommand = builtinSlashCommands.find(command => command.name === 'resume');
+check(resumeCommand !== undefined, '/resume is registered');
+let openedResumeArguments = '';
+await resumeCommand.execute(
+  {
+    getSessionId: () => 'current-session',
+    openCommandArgumentPicker: (commandName: string) => {
+      openedResumeArguments = commandName;
+    },
+  } as unknown as SlashCommandContext,
+  { raw: '/resume', invocation: 'resume', argsText: '', argv: [] },
+);
+equal(openedResumeArguments, 'resume', 'bare /resume opens the inline composer picker');
+
 const resumeApp = new AgentApp();
-let resumePickerOpened = false;
 const resumeAppInternals = resumeApp as unknown as {
   store: ReturnType<typeof createAgentStore>;
+  resumeSessionScope: 'current' | 'all';
   render(): void;
-  openResumePicker(): Promise<void>;
-  tryAcceptAndSubmitSlashCommandSuggestion(): Promise<boolean>;
-  activeSubmissionTask: Promise<void> | null;
+  handleInputBinding(binding: { type: 'acceptSuggestion' }): Promise<void>;
 };
 resumeAppInternals.render = () => {};
-resumeAppInternals.openResumePicker = async () => {
-  resumePickerOpened = true;
-};
 resumeAppInternals.store.replaceInput('/resume');
-check(
-  await resumeAppInternals.tryAcceptAndSubmitSlashCommandSuggestion(),
-  'submitting /resume opens the picker',
-);
-await resumeAppInternals.activeSubmissionTask;
-check(resumePickerOpened, '/resume does not select a session before the picker opens');
-check(!resumeAppInternals.store.getState().busy, '/resume does not show the Working indicator');
+await resumeAppInternals.handleInputBinding({ type: 'acceptSuggestion' });
+equal(resumeAppInternals.resumeSessionScope, 'all', 'tab expands inline resume to all sessions');
+await resumeAppInternals.handleInputBinding({ type: 'acceptSuggestion' });
+equal(resumeAppInternals.resumeSessionScope, 'current', 'tab returns inline resume to the current workspace');
 
 const highlightedCommandApp = new AgentApp();
 const highlightedCommandInternals = highlightedCommandApp as unknown as {
@@ -398,7 +404,7 @@ const renderedPs = serializeBlock(
   renderHistoryEntry(psEntries[0]!, createRenderContext(createTheme(), false, 80, 30)),
 ).join('\n');
 check(
-  renderedPs.includes('/ps\n\n Background terminals\n\n   • printf ready; sleep 10\n     ↳ ready'),
+  renderedPs.includes('/ps\n Background terminals\n   • printf ready; sleep 10\n     ↳ ready'),
   '/ps renders the Codex background-terminal history cell',
 );
 

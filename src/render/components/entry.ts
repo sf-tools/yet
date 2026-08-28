@@ -264,7 +264,10 @@ function renderToolEntry(text: string, ctx: RenderContext): Block {
 }
 
 function renderMetaEntry(text: string, ctx: RenderContext): Block {
-  if (text === 'Model interrupted to submit steer instructions.') {
+  if (
+    text === 'Model interrupted to submit steer instructions.' ||
+    text === 'Stopping all background terminals.'
+  ) {
     return indent(
       wrapTextBlock(text, Math.max(1, ctx.width - 3), ctx.theme.foreground),
       [span(LEFT_MARGIN), span('• ', ctx.theme.dimmed)],
@@ -320,9 +323,7 @@ function renderBackgroundProcessesEntry(
 ): Block {
   const block: Block = [
     line(span(LEFT_MARGIN), span('/ps', chalk.magentaBright)),
-    blankLine(),
     line(span(LEFT_MARGIN), span('Background terminals', chalk.bold)),
-    blankLine(),
   ];
 
   if (entry.processes.length === 0) {

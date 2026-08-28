@@ -70,7 +70,7 @@ function printHelp() {
     chalk.bold('Commands:'),
     '',
     formatRows([
-      ['resume [session]', 'Resume a saved session; opens the picker when omitted'],
+      ['resume [session]', 'Resume a saved session; opens the inline picker when omitted'],
     ]),
     '',
     chalk.bold('Options:'),

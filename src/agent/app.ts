@@ -35,6 +35,8 @@ import { createFileChange, readOptionalFile } from '@/file-changes';
 import {
   builtinSlashCommands,
   createSlashCommandRegistry,
+  currentSlashCommandQuery,
+  type ResumeSessionScope,
   type ResolvedSlashCommand,
   type SlashCommandContext,
 } from './slash-commands';
@@ -42,7 +44,6 @@ import {
   createTurnContextEvent,
   hydrateStateFromSession,
   loadYetSession,
-  restoreYetSession,
   persistedStateFromAgentState,
   SessionRecorder,
   type ThreadNameSource,
@@ -157,6 +158,8 @@ function estimateMessageTokens(messages: AgentMessage[]) {
 export type AgentAppOptions = {
   initialState?: AgentState;
   initialPrompt?: string;
+  initialComposer?: string;
+  resumeSessionScope?: ResumeSessionScope;
   sessionId?: string;
   threadTitle?: string;
   rolloutPath?: string;
@@ -212,6 +215,7 @@ export class AgentApp {
   private backgroundWaitToolCallId: string | null = null;
   private readonly sessionFileBaselines = new Map<string, string | null>();
   private readonly backgroundTerminals = new BackgroundTerminalManager(() => this.scheduleRender());
+  private resumeSessionScope: ResumeSessionScope = 'current';
 
   private readonly tools = createToolRegistry({
     workspaceRoot: process.cwd(),
@@ -234,6 +238,7 @@ export class AgentApp {
   });
   private readonly slashCommands = createSlashCommandRegistry(builtinSlashCommands, {
     getSessionId: () => this.sessionId,
+    getResumeSessionScope: () => this.resumeSessionScope,
     getCurrentModel: () => this.state.currentModel,
   });
 
@@ -482,7 +487,14 @@ export class AgentApp {
       : null;
     const suggestionLines = choicePrompt || configPicker || statusPanel || textPrompt
       ? []
-      : renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
+      : renderSuggestions(
+          suggestions,
+          this.state.selectedSuggestion,
+          ctx,
+          this.isInlineResumePickerOpen()
+            ? `tab ${this.resumeSessionScope === 'current' ? 'all sessions' : 'current workspace'}`
+            : undefined,
+        );
     const footer = choicePrompt || configPicker || statusPanel || textPrompt || suggestionLines.length > 0
       ? []
       : renderFooter(this.state, ctx);
@@ -533,6 +545,8 @@ export class AgentApp {
     this.thinkingModeOverride = options.thinkingMode;
     this.permissionModeOverride = options.permissionMode;
     this.initialPrompt = options.initialPrompt?.trim() || undefined;
+    this.resumeSessionScope = options.resumeSessionScope ?? 'current';
+    if (options.initialComposer) this.store.replaceInput(options.initialComposer);
     this.threadTitle = options.threadTitle?.trim() ? options.threadTitle.trim() : null;
     this.sessionRolloutPath = options.rolloutPath;
     this.sessionCreatedAt = options.sessionCreatedAt;
@@ -1045,39 +1059,6 @@ export class AgentApp {
     this.resetRenderedScreen();
     this.render();
     this.showFooterNotice(`Switched to ${this.threadTitle ?? 'Untitled thread'}`);
-  }
-
-  private async openResumePicker() {
-    if (this.sideConversationActive)
-      throw new Error("'/resume' is unavailable in side conversations. Press Ctrl+C to return to the main thread first.");
-    if (this.state.abortController)
-      throw new Error("'/resume' is unavailable while a task is running.");
-
-    this.stdin.off('data', this.onStdinData);
-    process.stdout.off('resize', this.render);
-    try {
-      const { selectYetResumeSession } = await import('@/resume-selector');
-      const selection = await selectYetResumeSession({
-        workspacePath: process.cwd(),
-        launchContext: 'in-session',
-        currentSessionId: this.sessionId,
-      });
-      if (selection.action !== 'resume') return;
-      if (selection.session.archivedAt) {
-        const restored = await restoreYetSession(selection.session.sessionId);
-        if (!restored)
-          throw new Error(`Could not restore session '${selection.session.sessionId}'.`);
-      }
-      await this.switchToSession(selection.session.sessionId);
-    } finally {
-      if (!this.state.closed) {
-        if (this.stdin.isTTY) this.stdin.setRawMode(true);
-        this.stdin.on('data', this.onStdinData);
-        process.stdout.on('resize', this.render);
-        if (process.stdout.isTTY) process.stdout.write('\u001b[?25l\u001b[?2004h');
-        this.render();
-      }
-    }
   }
 
   private async forkCurrentSession(name?: string) {
@@ -1640,6 +1621,7 @@ export class AgentApp {
   private openCommandArgumentPicker(commandName: string) {
     this.clearHistoryNavigation();
     this.resetPreferredComposerColumn();
+    if (commandName === 'resume') this.resumeSessionScope = 'current';
     this.store.replaceInput(`/${commandName}`);
     this.store.resetSelectedSuggestion();
     this.render();
@@ -2324,7 +2306,6 @@ export class AgentApp {
       enqueueSubmission: (text, options) =>
         this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
       openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
-      openResumePicker: () => this.openResumePicker(),
       openConfigPicker: () => this.openConfigPicker(),
       openStatusPanel: panel => this.openStatusPanel(panel),
       requestChoice: request => this.requestChoice(request),
@@ -2332,6 +2313,7 @@ export class AgentApp {
       showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
       getActiveToolSummaries: () => this.getActiveToolSummaries(),
       getSessionId: () => this.sessionId,
+      getResumeSessionScope: () => this.resumeSessionScope,
       switchToSession: sessionId => this.switchToSession(sessionId),
       getLastRequestId: () => this.lastRequestId,
       getLastAssistantResponse: () => this.getLastAssistantResponse(),
@@ -3113,6 +3095,21 @@ export class AgentApp {
     return true;
   }
 
+  private isInlineResumePickerOpen() {
+    const query = currentSlashCommandQuery(this.state.inputChars, this.state.cursor);
+    return query?.type === 'argument'
+      ? query.invocation === 'resume'
+      : query?.type === 'invocation' && query.query.toLowerCase() === 'resume';
+  }
+
+  private toggleResumeSessionScope() {
+    if (!this.isInlineResumePickerOpen()) return false;
+    this.resumeSessionScope = this.resumeSessionScope === 'current' ? 'all' : 'current';
+    this.store.resetSelectedSuggestion();
+    this.render();
+    return true;
+  }
+
   private async tryAcceptAndSubmitSlashCommandSuggestion() {
     const suggestions = this.normalizeSuggestions();
     const selectedSuggestion = suggestions[this.state.selectedSuggestion];
@@ -3320,6 +3317,7 @@ export class AgentApp {
     }
 
     if (binding.type === 'acceptSuggestion') {
+      if (this.toggleResumeSessionScope()) return;
       if (this.getSuggestions().length === 0 && this.queueComposerDraft()) return;
       this.tryAcceptSuggestion();
       return;

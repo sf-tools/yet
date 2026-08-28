@@ -27,7 +27,11 @@ function normalizeArgumentSuggestion(suggestion: SlashCommandArgumentSuggestion)
 }
 
 function getSuggestionContext(context?: SlashCommandSuggestionContext) {
-  return context ?? { getSessionId: () => '', getCurrentModel: () => '' };
+  return context ?? {
+    getSessionId: () => '',
+    getResumeSessionScope: () => 'current' as const,
+    getCurrentModel: () => '',
+  };
 }
 
 export function currentSlashCommandQuery(
