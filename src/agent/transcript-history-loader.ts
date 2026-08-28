@@ -10,6 +10,21 @@ type TranscriptHistoryChunk = {
   document: ReturnType<typeof renderTranscriptDocument>;
 };
 
+export function shouldLoadMoreTranscriptHistory(options: {
+  done: boolean;
+  contentLength: number;
+  contentHeight: number;
+  scrollOffset: number;
+  maxScroll: number;
+  backtrackPending: boolean;
+}) {
+  if (options.done) return false;
+  if (options.backtrackPending) return true;
+  if (options.contentLength < options.contentHeight * 2) return true;
+  return options.scrollOffset > 0 &&
+    options.scrollOffset + options.contentHeight >= options.maxScroll;
+}
+
 function isCommandHistoryEntry(entry: HistoryEntry | undefined): entry is ToolHistoryEntry {
   return entry?.type === 'tool' && isCommandToolEntry(entry);
 }

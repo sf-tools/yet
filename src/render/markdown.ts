@@ -3,52 +3,6 @@ import MarkdownIt from 'markdown-it';
 import { basename, extname } from 'node:path';
 import Prism from 'prismjs';
 
-import 'prismjs/components/prism-markup.js';
-import 'prismjs/components/prism-clike.js';
-import 'prismjs/components/prism-javascript.js';
-import 'prismjs/components/prism-jsx.js';
-import 'prismjs/components/prism-typescript.js';
-import 'prismjs/components/prism-tsx.js';
-import 'prismjs/components/prism-css.js';
-import 'prismjs/components/prism-c.js';
-import 'prismjs/components/prism-cpp.js';
-import 'prismjs/components/prism-csharp.js';
-import 'prismjs/components/prism-java.js';
-import 'prismjs/components/prism-kotlin.js';
-import 'prismjs/components/prism-swift.js';
-import 'prismjs/components/prism-ruby.js';
-import 'prismjs/components/prism-markup-templating.js';
-import 'prismjs/components/prism-php.js';
-import 'prismjs/components/prism-objectivec.js';
-import 'prismjs/components/prism-lua.js';
-import 'prismjs/components/prism-elixir.js';
-import 'prismjs/components/prism-haskell.js';
-import 'prismjs/components/prism-scala.js';
-import 'prismjs/components/prism-dart.js';
-import 'prismjs/components/prism-graphql.js';
-import 'prismjs/components/prism-scss.js';
-import 'prismjs/components/prism-sass.js';
-import 'prismjs/components/prism-less.js';
-import 'prismjs/components/prism-json.js';
-import 'prismjs/components/prism-json5.js';
-import 'prismjs/components/prism-bash.js';
-import 'prismjs/components/prism-powershell.js';
-import 'prismjs/components/prism-perl.js';
-import 'prismjs/components/prism-r.js';
-import 'prismjs/components/prism-wasm.js';
-import 'prismjs/components/prism-zig.js';
-import 'prismjs/components/prism-docker.js';
-import 'prismjs/components/prism-makefile.js';
-import 'prismjs/components/prism-ini.js';
-import 'prismjs/components/prism-diff.js';
-import 'prismjs/components/prism-python.js';
-import 'prismjs/components/prism-go.js';
-import 'prismjs/components/prism-rust.js';
-import 'prismjs/components/prism-yaml.js';
-import 'prismjs/components/prism-toml.js';
-import 'prismjs/components/prism-sql.js';
-import 'prismjs/components/prism-markdown.js';
-
 import { repeat, truncateToWidth, widthOf } from '@/text';
 import { indent, prefixWidth } from './layout';
 import { blankLine, line, span } from './primitives';
@@ -62,6 +16,85 @@ import type { Block, RenderContext, Segment, Style, StyledLine } from './types';
 const md = new MarkdownIt({
   linkify: true,
 });
+
+const SUPPORTED_CODE_LANGUAGES = new Set([
+  'markup', 'clike', 'javascript', 'jsx', 'typescript', 'tsx', 'css', 'c', 'cpp',
+  'csharp', 'java', 'kotlin', 'swift', 'ruby', 'php', 'objectivec', 'lua', 'elixir',
+  'haskell', 'scala', 'dart', 'graphql', 'scss', 'sass', 'less', 'json', 'json5',
+  'bash', 'powershell', 'perl', 'r', 'wasm', 'zig', 'docker', 'makefile', 'ini',
+  'diff', 'python', 'go', 'rust', 'yaml', 'toml', 'sql', 'markdown',
+]);
+
+let syntaxLanguagesPromise: Promise<void> | null = null;
+let syntaxLanguagesReady = false;
+
+const SYNTAX_LANGUAGE_LOADERS: Array<{
+  language: string;
+  load: () => Promise<unknown>;
+}> = [
+  { language: 'markup', load: () => import('prismjs/components/prism-markup.js') },
+  { language: 'clike', load: () => import('prismjs/components/prism-clike.js') },
+  { language: 'javascript', load: () => import('prismjs/components/prism-javascript.js') },
+  { language: 'jsx', load: () => import('prismjs/components/prism-jsx.js') },
+  { language: 'typescript', load: () => import('prismjs/components/prism-typescript.js') },
+  { language: 'tsx', load: () => import('prismjs/components/prism-tsx.js') },
+  { language: 'css', load: () => import('prismjs/components/prism-css.js') },
+  { language: 'c', load: () => import('prismjs/components/prism-c.js') },
+  { language: 'cpp', load: () => import('prismjs/components/prism-cpp.js') },
+  { language: 'csharp', load: () => import('prismjs/components/prism-csharp.js') },
+  { language: 'java', load: () => import('prismjs/components/prism-java.js') },
+  { language: 'kotlin', load: () => import('prismjs/components/prism-kotlin.js') },
+  { language: 'swift', load: () => import('prismjs/components/prism-swift.js') },
+  { language: 'ruby', load: () => import('prismjs/components/prism-ruby.js') },
+  { language: 'markup-templating', load: () => import('prismjs/components/prism-markup-templating.js') },
+  { language: 'php', load: () => import('prismjs/components/prism-php.js') },
+  { language: 'objectivec', load: () => import('prismjs/components/prism-objectivec.js') },
+  { language: 'lua', load: () => import('prismjs/components/prism-lua.js') },
+  { language: 'elixir', load: () => import('prismjs/components/prism-elixir.js') },
+  { language: 'haskell', load: () => import('prismjs/components/prism-haskell.js') },
+  { language: 'scala', load: () => import('prismjs/components/prism-scala.js') },
+  { language: 'dart', load: () => import('prismjs/components/prism-dart.js') },
+  { language: 'graphql', load: () => import('prismjs/components/prism-graphql.js') },
+  { language: 'scss', load: () => import('prismjs/components/prism-scss.js') },
+  { language: 'sass', load: () => import('prismjs/components/prism-sass.js') },
+  { language: 'less', load: () => import('prismjs/components/prism-less.js') },
+  { language: 'json', load: () => import('prismjs/components/prism-json.js') },
+  { language: 'json5', load: () => import('prismjs/components/prism-json5.js') },
+  { language: 'bash', load: () => import('prismjs/components/prism-bash.js') },
+  { language: 'powershell', load: () => import('prismjs/components/prism-powershell.js') },
+  { language: 'perl', load: () => import('prismjs/components/prism-perl.js') },
+  { language: 'r', load: () => import('prismjs/components/prism-r.js') },
+  { language: 'wasm', load: () => import('prismjs/components/prism-wasm.js') },
+  { language: 'zig', load: () => import('prismjs/components/prism-zig.js') },
+  { language: 'docker', load: () => import('prismjs/components/prism-docker.js') },
+  { language: 'makefile', load: () => import('prismjs/components/prism-makefile.js') },
+  { language: 'ini', load: () => import('prismjs/components/prism-ini.js') },
+  { language: 'diff', load: () => import('prismjs/components/prism-diff.js') },
+  { language: 'python', load: () => import('prismjs/components/prism-python.js') },
+  { language: 'go', load: () => import('prismjs/components/prism-go.js') },
+  { language: 'rust', load: () => import('prismjs/components/prism-rust.js') },
+  { language: 'yaml', load: () => import('prismjs/components/prism-yaml.js') },
+  { language: 'toml', load: () => import('prismjs/components/prism-toml.js') },
+  { language: 'sql', load: () => import('prismjs/components/prism-sql.js') },
+  { language: 'markdown', load: () => import('prismjs/components/prism-markdown.js') },
+];
+
+function yieldToEventLoop() {
+  return new Promise<void>(resolve => setTimeout(resolve, 0));
+}
+
+export function preloadSyntaxLanguages(options: { incremental?: boolean } = {}) {
+  syntaxLanguagesPromise ??= (async () => {
+    for (const loader of SYNTAX_LANGUAGE_LOADERS) {
+      if ((Prism.languages as Record<string, Prism.Grammar | undefined>)[loader.language])
+        continue;
+      if (options.incremental) await yieldToEventLoop();
+      await loader.load();
+    }
+    syntaxLanguagesReady = true;
+  })();
+  return syntaxLanguagesPromise;
+}
 
 const CODE_LANGUAGE_ALIASES: Record<string, string> = {
   c: 'c',
@@ -112,6 +145,10 @@ const SPECIAL_FILE_LANGUAGES: Record<string, string> = {
 const MAX_HIGHLIGHT_BYTES = 512 * 1024;
 const MAX_HIGHLIGHT_LINES = 10_000;
 const MAX_HIGHLIGHT_LINE_LENGTH = 4 * 1024;
+const MAX_MARKDOWN_CACHE_ENTRIES = 256;
+const MAX_CACHED_MARKDOWN_CHARS = 32 * 1024;
+
+const markdownRenderCaches = new WeakMap<object, Map<string, Block>>();
 
 type SyntaxStyles = {
   comment: Style;
@@ -258,6 +295,13 @@ function wrapInlinePieces(pieces: InlinePiece[], width: number): StyledLine[] {
       flushLine();
     }
 
+    if (currentWidth + atomWidth <= safeWidth) {
+      pushText(text, style);
+      currentWidth += atomWidth;
+      if (currentWidth >= safeWidth) flushLine();
+      return;
+    }
+
     for (const ch of Array.from(text)) {
       const chWidth = Math.max(1, widthOf(ch));
       if (segments.length > 0 && currentWidth + chWidth > safeWidth) flushLine();
@@ -289,7 +333,9 @@ export function normalizeCodeLanguage(language: string | null) {
   const resolved = CODE_LANGUAGE_ALIASES[normalized] ?? normalized;
   if (resolved === 'plain') return null;
 
-  return (Prism.languages as Record<string, unknown>)[resolved] ? resolved : null;
+  return (Prism.languages as Record<string, unknown>)[resolved] || SUPPORTED_CODE_LANGUAGES.has(resolved)
+    ? resolved
+    : null;
 }
 
 export function codeLanguageForPath(path: string) {
@@ -828,7 +874,36 @@ export function renderMarkdown(
   text: string,
   ctx: RenderContext,
   width = Math.max(1, ctx.width - 2),
+  options: { cache?: boolean } = {},
 ): Block {
+  const cacheable = options.cache !== false && text.length <= MAX_CACHED_MARKDOWN_CHARS;
+  const cache = cacheable
+    ? (markdownRenderCaches.get(ctx.theme) ?? (() => {
+        const created = new Map<string, Block>();
+        markdownRenderCaches.set(ctx.theme, created);
+        return created;
+      })())
+    : null;
+  const cacheKey = cache
+    ? `${syntaxLanguagesReady ? 'syntax' : 'plain'}:${ctx.theme.isLight() ? 'l' : 'd'}:${width}:${text}`
+    : null;
+  if (cache && cacheKey) {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      cache.delete(cacheKey);
+      cache.set(cacheKey, cached);
+      return cached;
+    }
+  }
+
   const tokens = md.parse(text, {});
-  return renderRange(tokens, { ctx, width }).block;
+  const block = renderRange(tokens, { ctx, width }).block;
+  if (cache && cacheKey) {
+    cache.set(cacheKey, block);
+    if (cache.size > MAX_MARKDOWN_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+  }
+  return block;
 }

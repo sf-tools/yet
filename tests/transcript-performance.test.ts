@@ -7,7 +7,10 @@ import { line, span } from '../src/render/primitives';
 import { createTheme } from '../src/theme';
 import { widthOf } from '../src/text';
 import { renderCommandActivity } from '../src/render/components/tools/command-activity';
-import { TranscriptHistoryLoader } from '../src/agent/transcript-history-loader';
+import {
+  shouldLoadMoreTranscriptHistory,
+  TranscriptHistoryLoader,
+} from '../src/agent/transcript-history-loader';
 import { EntryKind, type HistoryEntry } from '../src/types';
 import { check, equal } from './harness';
 
@@ -95,4 +98,49 @@ equal(
     context,
   ).block).join('\n'),
   'incremental transcript chunks never split one command activity cell',
+);
+
+check(
+  shouldLoadMoreTranscriptHistory({
+    done: false,
+    contentLength: 20,
+    contentHeight: 40,
+    scrollOffset: 0,
+    maxScroll: 0,
+    backtrackPending: false,
+  }),
+  'transcript loading fills enough history for a smooth initial viewport',
+);
+check(
+  !shouldLoadMoreTranscriptHistory({
+    done: false,
+    contentLength: 400,
+    contentHeight: 40,
+    scrollOffset: 0,
+    maxScroll: 360,
+    backtrackPending: false,
+  }),
+  'transcript loading stops materializing off-screen history while resting at the tail',
+);
+check(
+  shouldLoadMoreTranscriptHistory({
+    done: false,
+    contentLength: 400,
+    contentHeight: 40,
+    scrollOffset: 330,
+    maxScroll: 360,
+    backtrackPending: false,
+  }),
+  'scrolling near the oldest loaded transcript rows prefetches the next chunk',
+);
+check(
+  shouldLoadMoreTranscriptHistory({
+    done: false,
+    contentLength: 400,
+    contentHeight: 40,
+    scrollOffset: 0,
+    maxScroll: 360,
+    backtrackPending: true,
+  }),
+  'message backtracking keeps loading until its target entry is available',
 );

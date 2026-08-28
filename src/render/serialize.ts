@@ -5,7 +5,9 @@ export function serializeSegment(segment: Segment) {
 }
 
 export function serializeSegments(segments: Segment[]) {
-  return segments.map(serializeSegment).join('');
+  let output = '';
+  for (const segment of segments) output += serializeSegment(segment);
+  return output;
 }
 
 export function serializeStyledLine(line: StyledLine) {

@@ -29,7 +29,10 @@ function wrapChoiceDetail(text: string, width: number, style: (text: string) => 
 }
 
 function clipPreviewText(text: string, ctx: RenderContext, maxLines: number) {
-  const maxChars = Math.max(2_000, ctx.width * maxLines * 8);
+  // The preview ultimately retains only maxLines physical rows. Keep a modest
+  // Markdown-syntax allowance without repeatedly parsing several hidden
+  // viewports as a streamed response grows.
+  const maxChars = Math.max(2_000, ctx.width * maxLines * 2);
   if (text.length <= maxChars) return text;
   return `…${text.slice(-maxChars)}`;
 }
@@ -144,14 +147,22 @@ export function renderOutputPreview(
   if (reasoningText) {
     const clippedReasoning = clipPreviewText(reasoningText, ctx, maxLines);
     previewBlocks.push(
-      renderHistoryEntry({ type: 'entry', kind: EntryKind.Reasoning, text: clippedReasoning }, ctx),
+      renderHistoryEntry(
+        { type: 'entry', kind: EntryKind.Reasoning, text: clippedReasoning },
+        ctx,
+        { cacheMarkdown: false },
+      ),
     );
   }
 
   if (text) {
     const previewText = clipPreviewText(text, ctx, maxLines);
     previewBlocks.push(
-      renderHistoryEntry({ type: 'entry', kind: EntryKind.Assistant, text: previewText }, ctx),
+      renderHistoryEntry(
+        { type: 'entry', kind: EntryKind.Assistant, text: previewText },
+        ctx,
+        { cacheMarkdown: false },
+      ),
     );
   }
 

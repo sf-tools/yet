@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import { homedir } from 'node:os';
 import { isAbsolute, relative } from 'node:path';
 
-import { formatWorkspacePath, widthOf } from '@/text';
+import { formatWorkspacePath, isPrintableAscii, widthOf } from '@/text';
 import {
   codeLanguageForPath,
   exceedsSyntaxHighlightLimits,
@@ -185,6 +185,23 @@ function wrapSegments(segments: Segment[], maxColumns: number): Segment[][] {
   };
 
   for (const segment of segments) {
+    if (isPrintableAscii(segment.text)) {
+      let offset = 0;
+      while (offset < segment.text.length) {
+        const available = width - currentWidth;
+        if (available === 0) {
+          flush();
+          continue;
+        }
+        const end = Math.min(segment.text.length, offset + available);
+        append(segment.text.slice(offset, end), segment.style);
+        currentWidth += end - offset;
+        offset = end;
+        if (currentWidth >= width) flush();
+      }
+      continue;
+    }
+
     for (const sourceCharacter of Array.from(segment.text)) {
       const text = sourceCharacter === '\t' ? '    ' : sourceCharacter;
       const characterWidth = Math.max(1, widthOf(text));
@@ -290,7 +307,8 @@ function renderDiffLine(
     ];
     let rendered = serializeSegments(segments);
     if (lineBackground) {
-      const padding = ' '.repeat(Math.max(0, innerWidth - widthOf(rendered)));
+      const visibleWidth = segments.reduce((total, segment) => total + widthOf(segment.text), 0);
+      const padding = ' '.repeat(Math.max(0, innerWidth - visibleWidth));
       rendered = lineBackground(`${rendered}${padding}`);
     }
     return rawLine(`    ${rendered}`);

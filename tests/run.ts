@@ -1,14 +1,16 @@
-import './input.test';
-import './commands.test';
-import './rendering.test';
-import './cli.test';
-import './tools.test';
-import './titles.test';
-import './sessions.test';
-import './transient-terminal.test';
-import './history-spacing.test';
-import './transcript-performance.test';
-
 import { finish } from './harness';
+import { preloadSyntaxLanguages } from '../src/render/markdown';
+
+await preloadSyntaxLanguages();
+await import('./input.test');
+await import('./commands.test');
+await import('./rendering.test');
+await import('./cli.test');
+await import('./tools.test');
+await import('./titles.test');
+await import('./sessions.test');
+await import('./transient-terminal.test');
+await import('./history-spacing.test');
+await import('./transcript-performance.test');
 
 finish();

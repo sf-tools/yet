@@ -1,15 +1,32 @@
 import stringWidth from 'string-width';
 
-export const stripAnsi = (s: string) =>
-  s
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
+export const isPrintableAscii = (text: string) => PRINTABLE_ASCII.test(text);
+
+export const stripAnsi = (s: string) => {
+  if (!s.includes('\x1B') && !s.includes('\x9B')) return s;
+  return s
     .replace(/\x1B\][\s\S]*?(?:\x07|\x1B\\)/g, '')
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
-export const widthOf = (s: string) => stringWidth(stripAnsi(s));
+};
+
+export const widthOf = (s: string) => {
+  if (isPrintableAscii(s)) return s.length;
+  return stringWidth(stripAnsi(s));
+};
 export const repeat = (ch: string, count: number) => ch.repeat(Math.max(0, count));
-export const plain = (s: string) => stripAnsi(s).replace(/\r/g, '');
+export const plain = (s: string) => {
+  const stripped = stripAnsi(s);
+  return stripped.includes('\r') ? stripped.replace(/\r/g, '') : stripped;
+};
 
 export function truncateToWidth(text: string, maxWidth: number) {
   if (maxWidth <= 0) return '';
+  if (isPrintableAscii(text)) {
+    if (text.length <= maxWidth) return text;
+    return maxWidth === 1 ? '…' : `${text.slice(0, maxWidth - 1)}…`;
+  }
   if (widthOf(text) <= maxWidth) return text;
   if (maxWidth === 1) return '…';
 
@@ -36,6 +53,12 @@ export function formatWorkspacePath(path: string) {
 function wrapLine(line: string, width: number) {
   if (width <= 0) return [''];
   if (!line) return [''];
+  if (isPrintableAscii(line)) {
+    const out: string[] = [];
+    for (let offset = 0; offset < line.length; offset += width)
+      out.push(line.slice(offset, offset + width));
+    return out;
+  }
 
   const out: string[] = [];
   let current = '';

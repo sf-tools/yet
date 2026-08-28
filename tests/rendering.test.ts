@@ -13,7 +13,12 @@ import { renderComposer } from '@/render/components/composer';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
 import { renderCommandActivity } from '@/render/components/tools/command-activity';
 import { renderTranscriptOverlay } from '@/render/components/transcript-overlay';
-import { codeLanguageForPath, highlightedCodeBlock, renderMarkdown } from '@/render/markdown';
+import {
+  codeLanguageForPath,
+  highlightedCodeBlock,
+  highlightedCodeLines,
+  renderMarkdown,
+} from '@/render/markdown';
 import {
   hideWebLinkDestination,
   osc8Hyperlink,
@@ -123,9 +128,26 @@ const renderedMarkdown = serializeBlock(
     76,
   ),
 ).join('\n');
+const cacheProbe = 'A stable **cached** response.';
+const cachedMarkdown = renderMarkdown(cacheProbe, renderContext, 76);
+check(
+  renderMarkdown(cacheProbe, renderContext, 76) === cachedMarkdown &&
+    renderMarkdown(cacheProbe, renderContext, 76, { cache: false }) !== cachedMarkdown,
+  'committed Markdown reuses rendered blocks while live rendering can bypass the cache',
+);
 
 equal(codeLanguageForPath('Dockerfile'), 'docker', 'shared syntax detection handles extensionless files');
 equal(codeLanguageForPath('native/widget.cpp'), 'cpp', 'shared syntax detection handles C++ extensions');
+check(
+  [
+    'markup', 'clike', 'javascript', 'jsx', 'typescript', 'tsx', 'css', 'c', 'cpp',
+    'csharp', 'java', 'kotlin', 'swift', 'ruby', 'php', 'objectivec', 'lua', 'elixir',
+    'haskell', 'scala', 'dart', 'graphql', 'scss', 'sass', 'less', 'json', 'json5',
+    'bash', 'powershell', 'perl', 'r', 'wasm', 'zig', 'docker', 'makefile', 'ini',
+    'diff', 'python', 'go', 'rust', 'yaml', 'toml', 'sql', 'markdown',
+  ].every(language => highlightedCodeLines('const value = 1;', language, renderContext) !== null),
+  'lazy syntax loading preserves every supported grammar',
+);
 const previousChalkLevel = chalk.level;
 chalk.level = 3;
 try {

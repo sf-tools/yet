@@ -27,7 +27,10 @@ export function renderTranscriptDocument(
   entries: HistoryEntry[],
   live: { reasoning: string; assistant: string },
   ctx: RenderContext,
-  options: { highlightHistoryIndex?: number | null } = {},
+  options: {
+    highlightHistoryIndex?: number | null;
+    cacheMarkdown?: boolean;
+  } = {},
 ): TranscriptDocument {
   const sourceEntries = [...entries];
   if (live.reasoning.trim()) {
@@ -63,6 +66,7 @@ export function renderTranscriptDocument(
     } else {
       block = renderHistoryEntry(entry, transcriptContext, {
         highlighted: index === options.highlightHistoryIndex,
+        cacheMarkdown: options.cacheMarkdown,
       });
       index += 1;
     }

@@ -24,6 +24,7 @@ import { renderFooter } from '@/render/components/footer';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
 import type { ReadStream as TtyReadStream } from 'node:tty';
 import { renderHistoryEntry } from '@/render/components/entry';
+import { preloadSyntaxLanguages } from '@/render/markdown';
 import {
   commandActivityIsRunning,
   isCommandToolEntry,
@@ -67,7 +68,10 @@ import {
   SIDE_DEVELOPER_INSTRUCTIONS,
 } from './side-conversation';
 import { applyConfigPickerState, createConfigPickerState } from './config-settings';
-import { TranscriptHistoryLoader } from './transcript-history-loader';
+import {
+  shouldLoadMoreTranscriptHistory,
+  TranscriptHistoryLoader,
+} from './transcript-history-loader';
 import { createProvisionalThreadTitle, startBackgroundThreadTitle, type BackgroundThreadTitleRequest } from './thread-title';
 import { normalizePtyOutput, plain, installSegmentContainingPolyfill } from '@/text';
 import { handleAbortKeypress, createAbortController, resetAbortState } from './abort';
@@ -132,7 +136,7 @@ const BRACKETED_PASTE_END = '\u001b[201~';
 const TRANSCRIPT_SCREEN_ENTER = '\u001b[?1049h\u001b[?1007h';
 const TRANSCRIPT_SCREEN_LEAVE = '\u001b[?1007l\u001b[?1049l';
 const BACKTRACK_FOOTER_HINT = 'esc again to edit previous message';
-const TRANSCRIPT_INITIAL_HISTORY_ENTRIES = 8;
+const TRANSCRIPT_INITIAL_HISTORY_ENTRIES = 2;
 const TRANSCRIPT_BACKGROUND_HISTORY_ENTRIES = 8;
 const TRANSCRIPT_HISTORY_CHUNK_DELAY_MS = 16;
 const MIN_SELF_PACED_LOOP_DELAY_SECONDS = 60;
@@ -660,11 +664,15 @@ export class AgentApp {
       parentSessionId: this.sessionParentId,
       forkPoint: this.sessionForkPoint,
     });
+    const syntaxReady = this.bootFromSnapshot
+      ? preloadSyntaxLanguages()
+      : Promise.resolve();
 
     const [, preferences, sessionRecorder] = await Promise.all([
       themeReady,
       preferencesReady,
       sessionRecorderReady,
+      syntaxReady,
     ]);
     if (preferences) {
       this.store.setCurrentModel(preferences.model);
@@ -695,6 +703,12 @@ export class AgentApp {
     process.stdout.on('resize', this.render);
 
     this.render();
+    if (!this.bootFromSnapshot) {
+      const preloadTimer = setTimeout(() => {
+        void preloadSyntaxLanguages({ incremental: true }).catch(error => this.handleFatalError(error));
+      }, 250);
+      preloadTimer.unref?.();
+    }
     for (const chunk of buffer) this.onStdinData(chunk);
     if (this.initialPrompt) this.startSubmissionTask(this.initialPrompt);
     else if (this.state.goal?.status === 'active' && this.state.inputChars.length === 0) {
@@ -884,7 +898,6 @@ export class AgentApp {
       if (cache.loader.loadMore(TRANSCRIPT_BACKGROUND_HISTORY_ENTRIES)) {
         this.scheduleRender();
       }
-      this.scheduleTranscriptHistoryLoad();
     }, TRANSCRIPT_HISTORY_CHUNK_DELAY_MS);
     this.transcriptHistoryLoadTimer.unref?.();
   }
@@ -927,7 +940,6 @@ export class AgentApp {
         cached.loader.setHighlightHistoryIndex(this.backtrackHistoryIndex);
         cached.highlightHistoryIndex = this.backtrackHistoryIndex;
       }
-      this.scheduleTranscriptHistoryLoad();
       const liveCached = this.transcriptLiveCache;
       if (
         !liveCached ||
@@ -939,7 +951,12 @@ export class AgentApp {
           width: columns,
           reasoning,
           assistant,
-          block: renderTranscriptDocument([], { reasoning, assistant }, ctx).block,
+          block: renderTranscriptDocument(
+            [],
+            { reasoning, assistant },
+            ctx,
+            { cacheMarkdown: false },
+          ).block,
         };
       }
       const historyParts = this.transcriptHistoryCache?.loader.contentParts() ?? [];
@@ -950,11 +967,23 @@ export class AgentApp {
         ...(liveBlock.length > 0 ? [liveBlock] : []),
       ];
       const contentLength = contentParts.reduce((total, part) => total + part.length, 0);
+      const contentHeight = Math.max(1, rows - 4);
+      const maxScroll = Math.max(0, contentLength - contentHeight);
+      const historyLoader = this.transcriptHistoryCache?.loader;
+      if (historyLoader && shouldLoadMoreTranscriptHistory({
+        done: historyLoader.done,
+        contentLength,
+        contentHeight,
+        scrollOffset: this.transcriptScrollOffset,
+        maxScroll,
+        backtrackPending: this.backtrackScrollPending,
+      })) {
+        this.scheduleTranscriptHistoryLoad();
+      } else {
+        this.cancelTranscriptHistoryLoad();
+      }
       if (this.backtrackScrollPending && this.backtrackHistoryIndex !== null) {
-        const contentHeight = Math.max(1, rows - 4);
-        const maxScroll = Math.max(0, contentLength - contentHeight);
-        const loader = this.transcriptHistoryCache?.loader;
-        const range = loader?.entryRange(this.backtrackHistoryIndex);
+        const range = historyLoader?.entryRange(this.backtrackHistoryIndex);
         if (range) {
           const desiredStart = Math.max(
             0,
@@ -962,7 +991,7 @@ export class AgentApp {
           );
           this.transcriptScrollOffset = maxScroll - desiredStart;
           this.backtrackScrollPending = false;
-        } else if (loader?.done) this.backtrackScrollPending = false;
+        } else if (historyLoader?.done) this.backtrackScrollPending = false;
       }
       const rendered = renderTranscriptViewportParts(
         contentParts,
@@ -970,7 +999,9 @@ export class AgentApp {
         ctx,
         { backtracking: this.backtrackHistoryIndex !== null },
       );
-      this.transcriptScrollOffset = Math.min(this.transcriptScrollOffset, rendered.maxScroll);
+      if (historyLoader?.done || this.transcriptScrollOffset <= rendered.maxScroll) {
+        this.transcriptScrollOffset = Math.min(this.transcriptScrollOffset, rendered.maxScroll);
+      }
       const transcriptLines = serializeBlock(rendered.block);
       const screenUpdate = diffScreenRowsSequence(this.lastTranscriptLines, transcriptLines, {
         scrollRegion: {

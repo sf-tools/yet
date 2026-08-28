@@ -14,6 +14,7 @@ import type { Block, RenderContext, Style, StyledLine } from '../types';
 export type HistoryEntryRenderOptions = {
   animateAssistant?: boolean;
   highlighted?: boolean;
+  cacheMarkdown?: boolean;
 };
 
 function renderUserEntry(text: string, ctx: RenderContext, highlighted = false): Block {
@@ -198,10 +199,15 @@ function styleBlock(block: Block, style: Style): Block {
   });
 }
 
-function renderAssistantEntry(text: string, ctx: RenderContext, animate = false): Block {
+function renderAssistantEntry(
+  text: string,
+  ctx: RenderContext,
+  animate = false,
+  cacheMarkdown = true,
+): Block {
   const block = animate
     ? renderAssistantLines(text, ctx, true)
-    : renderMarkdown(text, ctx, Math.max(1, ctx.width - 3));
+    : renderMarkdown(text, ctx, Math.max(1, ctx.width - 3), { cache: cacheMarkdown });
   return indent(
     block,
     [span(LEFT_MARGIN), span('• ', ctx.theme.dimmed)],
@@ -209,10 +215,13 @@ function renderAssistantEntry(text: string, ctx: RenderContext, animate = false)
   );
 }
 
-function renderReasoningEntry(text: string, ctx: RenderContext): Block {
+function renderReasoningEntry(text: string, ctx: RenderContext, cacheMarkdown = true): Block {
   const style = (value: string) => chalk.italic(ctx.theme.dimmed(value));
   return indent(
-    styleBlock(renderMarkdown(text, ctx, Math.max(1, ctx.width - 3)), style),
+    styleBlock(
+      renderMarkdown(text, ctx, Math.max(1, ctx.width - 3), { cache: cacheMarkdown }),
+      style,
+    ),
     [span(LEFT_MARGIN), span('• ', ctx.theme.dimmed)],
     `${LEFT_MARGIN}  `,
   );
@@ -413,8 +422,14 @@ export function renderHistoryEntry(
     return renderUserEntry(entry.text, ctx, options.highlighted);
   }
   if (entry.kind === EntryKind.Assistant)
-    return renderAssistantEntry(entry.text, ctx, options.animateAssistant);
-  if (entry.kind === EntryKind.Reasoning) return renderReasoningEntry(entry.text, ctx);
+    return renderAssistantEntry(
+      entry.text,
+      ctx,
+      options.animateAssistant,
+      options.cacheMarkdown,
+    );
+  if (entry.kind === EntryKind.Reasoning)
+    return renderReasoningEntry(entry.text, ctx, options.cacheMarkdown);
   if (entry.kind === EntryKind.Shell) return renderShellEntry(entry.text, ctx);
   if (entry.kind === EntryKind.Error) return renderErrorEntry(entry.text, ctx);
   if (entry.kind === EntryKind.Tool) return renderToolEntry(entry.text, ctx);
