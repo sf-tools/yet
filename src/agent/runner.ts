@@ -1,4 +1,12 @@
-import { addUsage, EMPTY_USAGE, type AgentMessage, type AgentUsage } from './messages';
+import {
+  addUsage,
+  EMPTY_USAGE,
+  type AgentChatMessage,
+  type AgentMessage,
+  type AgentToolCallMessage,
+  type AgentToolResultMessage,
+  type AgentUsage,
+} from './messages';
 import {
   streamOpenAIResponse,
   type ProviderToolCall,
@@ -10,10 +18,20 @@ import type { ToolExecutionResult, ToolRegistry } from '@/tools';
 export type AgentLoopEvent =
   | { type: 'text-delta'; text: string }
   | { type: 'reasoning-delta'; text: string }
-  | { type: 'tool-call'; call: ProviderToolCall }
-  | { type: 'tool-result'; call: ProviderToolCall; result: ToolExecutionResult }
-  | { type: 'tool-error'; call: ProviderToolCall; error: unknown }
-  | { type: 'step-completed'; usage: AgentUsage };
+  | { type: 'tool-call'; call: ProviderToolCall; message: AgentToolCallMessage }
+  | {
+      type: 'tool-result';
+      call: ProviderToolCall;
+      result: ToolExecutionResult;
+      message: AgentToolResultMessage;
+    }
+  | {
+      type: 'tool-error';
+      call: ProviderToolCall;
+      error: unknown;
+      message: AgentToolResultMessage;
+    }
+  | { type: 'step-completed'; usage: AgentUsage; message?: AgentChatMessage };
 
 export type RunAgentLoopOptions = {
   model: string;
@@ -63,8 +81,15 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
     accumulatedText += step.text;
     accumulatedReasoning += step.reasoning;
     accumulatedUsage = addUsage(accumulatedUsage, step.usage);
-    if (step.text.trim()) generatedMessages.push({ role: 'assistant', content: step.text });
-    await options.onEvent?.({ type: 'step-completed', usage: step.usage });
+    const assistantMessage: AgentChatMessage | undefined = step.text.trim()
+      ? { role: 'assistant', content: step.text }
+      : undefined;
+    if (assistantMessage) generatedMessages.push(assistantMessage);
+    await options.onEvent?.({
+      type: 'step-completed',
+      usage: step.usage,
+      ...(assistantMessage ? { message: assistantMessage } : {}),
+    });
 
     if (step.toolCalls.length === 0) {
       return {
@@ -78,24 +103,29 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
 
     pendingOutputs = [];
     for (const call of step.toolCalls) {
-      generatedMessages.push({
+      const callMessage: AgentToolCallMessage = {
         role: 'tool-call',
         callId: call.id,
         name: call.name,
         input: call.input,
-      });
-      await options.onEvent?.({ type: 'tool-call', call });
+      };
+      generatedMessages.push(callMessage);
+      await options.onEvent?.({ type: 'tool-call', call, message: callMessage });
       try {
         const result = await options.tools.execute(call.name, call.input);
-        await options.onEvent?.({ type: 'tool-result', call, result });
         const output = JSON.stringify({ ok: true, output: toolOutput(result.output) });
         pendingOutputs.push({
           callId: call.id,
           output,
         });
-        generatedMessages.push({ role: 'tool-result', callId: call.id, output });
+        const resultMessage: AgentToolResultMessage = {
+          role: 'tool-result',
+          callId: call.id,
+          output,
+        };
+        generatedMessages.push(resultMessage);
+        await options.onEvent?.({ type: 'tool-result', call, result, message: resultMessage });
       } catch (error) {
-        await options.onEvent?.({ type: 'tool-error', call, error });
         const output = JSON.stringify({
           ok: false,
           error: error instanceof Error ? error.message : String(error),
@@ -104,7 +134,13 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
           callId: call.id,
           output,
         });
-        generatedMessages.push({ role: 'tool-result', callId: call.id, output });
+        const resultMessage: AgentToolResultMessage = {
+          role: 'tool-result',
+          callId: call.id,
+          output,
+        };
+        generatedMessages.push(resultMessage);
+        await options.onEvent?.({ type: 'tool-error', call, error, message: resultMessage });
       }
     }
   }

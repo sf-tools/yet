@@ -15,8 +15,8 @@ if (cli.resumePicker) {
     process.exit(1);
   }
 
-  const { listYetSessionSnapshots } = await import('@/agent/session-storage');
-  const sessions = await listYetSessionSnapshots({ cwd: process.cwd() });
+  const { listYetSessions } = await import('@/agent/session-storage');
+  const sessions = await listYetSessions({ cwd: process.cwd() });
   if (sessions.length === 0) {
     process.stderr.write('No saved threads found for this workspace.\n');
     process.exit(1);
@@ -28,24 +28,26 @@ if (cli.resumePicker) {
   resumeId = selection.sessionId;
 }
 
-const { hydrateStateFromSnapshot, loadYetSessionSnapshot } = await import(
+const { hydrateStateFromSession, loadYetSession } = await import(
   '@/agent/session-storage'
 );
-const resumeSnapshot = resumeId ? await loadYetSessionSnapshot(resumeId) : null;
-if (resumeId && !resumeSnapshot) {
+const resumeSession = resumeId ? await loadYetSession(resumeId) : null;
+if (resumeId && !resumeSession) {
   process.stderr.write(`No saved thread found for id '${resumeId}'.\n`);
   process.exit(1);
 }
 
-const initialState = resumeSnapshot ? hydrateStateFromSnapshot(resumeSnapshot) : undefined;
+const initialState = resumeSession ? hydrateStateFromSession(resumeSession) : undefined;
 const { startEarlyStdinCapture } = await import('@/agent/early-stdin');
 startEarlyStdinCapture();
 const { AgentApp } = await import('@/agent/app');
 
 const app = new AgentApp({
   initialState,
-  sessionId: resumeSnapshot?.sessionId,
-  threadTitle: resumeSnapshot?.title,
+  sessionId: resumeSession?.sessionId,
+  threadTitle: resumeSession?.name,
+  rolloutPath: resumeSession?.rolloutPath,
+  sessionCreatedAt: resumeSession?.createdAt,
   model: cli.model,
   thinkingMode: cli.thinkingMode,
   permissionMode: cli.permissionMode,

@@ -24,11 +24,18 @@ import { copyTextToClipboard } from './clipboard-text';
 import { createFileChange, readOptionalFile } from '@/file-changes';
 import { builtinSlashCommands, createSlashCommandRegistry } from './slash-commands';
 import {
-  createSnapshotFromState,
-  hydrateStateFromSnapshot,
-  loadYetSessionSnapshot,
-  saveYetSessionSnapshot,
+  createTurnContextEvent,
+  hydrateStateFromSession,
+  loadYetSession,
+  SessionRecorder,
+  type ThreadNameSource,
+  type YetSessionEvent,
 } from './session-storage';
+import {
+  createProvisionalThreadTitle,
+  startBackgroundThreadTitle,
+  type BackgroundThreadTitleRequest,
+} from './thread-title';
 import { normalizePtyOutput, plain, installSegmentContainingPolyfill } from '@/text';
 import { handleAbortKeypress, createAbortController, resetAbortState } from './abort';
 import { renderComposer, moveComposerCursorVertical } from '@/render/components/composer';
@@ -58,7 +65,6 @@ import {
   type AgentMessage,
   type AgentTextPart,
 } from './messages';
-import { generateOpenAIText } from '@/providers/openai';
 import { runAgentLoop } from './runner';
 import {
   shouldPromptForTool,
@@ -131,69 +137,12 @@ function estimateMessageTokens(messages: AgentMessage[]) {
   );
 }
 
-function normalizeThreadTitle(text: string) {
-  const taggedMatch = plain(text).match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  const firstLine = (taggedMatch?.[1] ?? plain(text))
-    .split('\n')
-    .map(line => line.trim())
-    .find(Boolean);
-  const normalized = firstLine
-    ? firstLine
-        .replace(/^title\s*:\s*/i, '')
-        .replace(/^['"`“”‘’]+|['"`“”‘’]+$/g, '')
-        .replace(/\s+/g, ' ')
-        .replace(/[.!?;,，。！？؛]+$/, '')
-        .trim()
-    : null;
-
-  if (!normalized) return null;
-  if (normalized.length <= 80) return normalized;
-
-  const truncated = normalized.slice(0, 80);
-  const boundary = truncated.lastIndexOf(' ');
-  return (boundary >= 24 ? truncated.slice(0, boundary) : truncated).trim();
-}
-
-function getThreadTitleContext(entries: HistoryEntry[]) {
-  const relevant = entries
-    .filter(
-      (entry): entry is Extract<HistoryEntry, { type: 'entry' }> =>
-        entry.type === 'entry' &&
-        (entry.kind === EntryKind.User || entry.kind === EntryKind.Assistant),
-    )
-    .map(entry => ({
-      speaker: entry.kind === EntryKind.User ? 'User' : 'Assistant',
-      text: plain(entry.text).replace(/\s+/g, ' ').trim(),
-    }))
-    .filter(entry => entry.text.length > 0)
-    .slice(0, 6);
-
-  const hasUser = relevant.some(entry => entry.speaker === 'User');
-  const hasAssistant = relevant.some(entry => entry.speaker === 'Assistant');
-  if (!hasUser || !hasAssistant) return null;
-
-  let total = 0;
-  const lines: string[] = [];
-
-  for (const entry of relevant) {
-    const remaining = 2400 - total;
-    if (remaining <= 0) break;
-
-    const clipped =
-      entry.text.length > remaining
-        ? `${entry.text.slice(0, Math.max(0, remaining - 1))}…`
-        : entry.text;
-    lines.push(`${entry.speaker}: ${clipped}`);
-    total += clipped.length;
-  }
-
-  return lines.length > 0 ? lines.join('\n\n') : null;
-}
-
 export type AgentAppOptions = {
   initialState?: AgentState;
   sessionId?: string;
   threadTitle?: string;
+  rolloutPath?: string;
+  sessionCreatedAt?: string;
   model?: string;
   thinkingMode?: AgentState['thinkingMode'];
   permissionMode?: PermissionMode;
@@ -244,9 +193,10 @@ export class AgentApp {
   private readonly permissionModeOverride?: PermissionMode;
   private lastRequestId: string | null = null;
   private threadTitle: string | null;
-  private threadTitleGeneration: Promise<void> | null = null;
-  private threadTitleGenerationToken = 0;
-  private sessionSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private threadTitleRequest: BackgroundThreadTitleRequest | null = null;
+  private sessionRecorder: SessionRecorder | null = null;
+  private sessionRolloutPath?: string;
+  private sessionCreatedAt?: string;
   private drainingQueuedSubmissions = false;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private footerNoticeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -451,6 +401,8 @@ export class AgentApp {
     this.thinkingModeOverride = options.thinkingMode;
     this.permissionModeOverride = options.permissionMode;
     this.threadTitle = options.threadTitle?.trim() ? options.threadTitle.trim() : null;
+    this.sessionRolloutPath = options.rolloutPath;
+    this.sessionCreatedAt = options.sessionCreatedAt;
 
     this.spinnerTimer = setInterval(() => {
       if (!this.state.busy || this.state.closed) return;
@@ -488,8 +440,14 @@ export class AgentApp {
       this.store.setThinkingMode(this.thinkingModeOverride);
     }
     if (this.permissionModeOverride) this.store.setPermissionMode(this.permissionModeOverride);
-
-    this.maybeGenerateThreadTitle();
+    this.sessionRecorder = await SessionRecorder.open({
+      sessionId: this.sessionId,
+      cwd: process.cwd(),
+      rolloutPath: this.sessionRolloutPath,
+      createdAt: this.sessionCreatedAt,
+      title: this.threadTitle ?? undefined,
+    });
+    this.sessionRolloutPath = this.sessionRecorder.rolloutPath;
 
     const { stream, buffer } = takeOverEarlyStdin();
     this.stdin = stream ?? process.stdin;
@@ -501,7 +459,6 @@ export class AgentApp {
     process.stdout.on('resize', this.render);
 
     this.render();
-    this.scheduleSessionSnapshot();
     for (const chunk of buffer) this.onStdinData(chunk);
   }
 
@@ -513,7 +470,6 @@ export class AgentApp {
     clearInterval(this.rainbowTimer);
     if (this.renderTimer) clearTimeout(this.renderTimer);
     if (this.footerNoticeTimer) clearTimeout(this.footerNoticeTimer);
-    if (this.sessionSaveTimer) clearTimeout(this.sessionSaveTimer);
     process.stdout.off('resize', this.render);
     this.stdin.off('data', this.onStdinData);
 
@@ -522,35 +478,30 @@ export class AgentApp {
     this.clearTransientBlock();
     if (process.stdout.isTTY) process.stdout.write('\u001b[?25h\u001b[?2004l');
 
+    if (code === 0) {
+      const exitLines = serializeBlock(
+        renderExitSummary({
+          threadTitle: this.threadTitle,
+          threadUrl: null,
+          resumeCommand: this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null,
+        }),
+      );
+
+      // The user sees the closing summary immediately. Only queued local writes remain afterward.
+      process.stdout.write(`${exitLines.join('\n')}\n`);
+    }
+
+    this.threadTitleRequest?.cancel();
+    this.threadTitleRequest = null;
+
     void (async () => {
-      if (code === 0) {
-        this.maybeGenerateThreadTitle();
-        if (this.threadTitleGeneration) {
-          try {
-            await this.threadTitleGeneration;
-          } catch {}
-        }
-      }
-
       try {
-        await this.persistSessionSnapshot();
-      } catch {}
-
-      if (code === 0) {
-        const exitLines = serializeBlock(
-          renderExitSummary({
-            threadTitle: this.threadTitle,
-            threadUrl: null,
-            resumeCommand: this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null,
-          }),
+        await this.sessionRecorder?.close();
+      } catch (error) {
+        process.stderr.write(
+          `warning: could not finish saving this session: ${plain(error instanceof Error ? error.message : String(error))}\n`,
         );
-
-        // Keep the conversation and the user's existing terminal scrollback in place. The
-        // transient composer/footer was already erased above, so the summary can be appended
-        // directly before control returns to the parent shell.
-        process.stdout.write(`${exitLines.join('\n')}\n`);
       }
-
       process.exit(code);
     })();
   }
@@ -710,68 +661,36 @@ export class AgentApp {
     this.footerNoticeTimer.unref?.();
   }
 
-  private async generateThreadTitle(context: string) {
-    const model = this.state.currentModel;
-    const { text } = await generateOpenAIText({
-      model,
-      thinkingMode: 'low',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You create concise titles for coding assistant threads. Return exactly one short title wrapped in <title></title>. Keep it under 8 words, describe the concrete task, avoid greetings, and do not use markdown or surrounding quotes.',
-        },
-        {
-          role: 'user',
-          content: `Name this conversation based on the task being worked on.\n\nConversation:\n${context}`,
-        },
-      ],
-    });
-
-    const title = normalizeThreadTitle(text);
-    if (!title) return null;
-    return title;
+  private recordSessionEvent(event: Exclude<YetSessionEvent, { type: 'session_meta' }>) {
+    this.sessionRecorder?.record(event);
   }
 
-  private maybeGenerateThreadTitle() {
-    if (this.threadTitle || this.threadTitleGeneration || this.state.closed) return;
+  private recordTurnContext() {
+    this.recordSessionEvent(createTurnContextEvent(this.state));
+  }
 
-    const context = getThreadTitleContext(this.state.historyEntries);
-    if (!context) return;
+  private startThreadTitleGeneration(userMessage: string) {
+    if (this.threadTitle || this.threadTitleRequest || this.state.closed) return;
+    const expectedTitle = createProvisionalThreadTitle(userMessage);
+    if (!expectedTitle) return;
 
-    const generationToken = ++this.threadTitleGenerationToken;
     const sessionId = this.sessionId;
-
-    this.threadTitleGeneration = (async () => {
-      try {
-        const title = await this.generateThreadTitle(context);
-        if (
-          !title ||
-          this.threadTitle ||
-          this.state.closed ||
-          this.sessionId !== sessionId ||
-          this.threadTitleGenerationToken !== generationToken
-        ) {
-          return;
-        }
-        this.threadTitle = title;
-        this.scheduleSessionSnapshot();
-        this.render();
-      } catch {
-      } finally {
-        if (this.threadTitleGenerationToken === generationToken) this.threadTitleGeneration = null;
-      }
-    })();
-  }
-
-  private async persistSessionSnapshot() {
-    const snapshot = createSnapshotFromState(
-      this.sessionId,
-      process.cwd(),
-      this.state,
-      this.threadTitle,
-    );
-    await saveYetSessionSnapshot(snapshot);
+    this.setThreadTitle(expectedTitle, 'provisional');
+    let request: BackgroundThreadTitleRequest;
+    request = startBackgroundThreadTitle({
+      userMessage,
+      expectedTitle,
+      getCurrentTitle: () =>
+        !this.state.closed && this.sessionId === sessionId ? this.threadTitle : null,
+      applyTitle: title => {
+        if (this.state.closed || this.sessionId !== sessionId) return;
+        this.setThreadTitle(title, 'generated', expectedTitle);
+      },
+      onSettled: () => {
+        if (this.threadTitleRequest === request) this.threadTitleRequest = null;
+      },
+    });
+    this.threadTitleRequest = request;
   }
 
   private async switchToSession(sessionId: string) {
@@ -780,40 +699,39 @@ export class AgentApp {
       return;
     }
 
-    if (this.sessionSaveTimer) {
-      clearTimeout(this.sessionSaveTimer);
-      this.sessionSaveTimer = null;
+    const session = await loadYetSession(sessionId);
+    if (!session) throw new Error(`No saved thread found for id '${sessionId}'.`);
+    const nextRecorder = await SessionRecorder.open({
+      sessionId: session.sessionId,
+      cwd: session.cwd,
+      rolloutPath: session.rolloutPath,
+      createdAt: session.createdAt,
+      title: session.name,
+    });
+
+    this.threadTitleRequest?.cancel();
+    this.threadTitleRequest = null;
+    try {
+      await this.sessionRecorder?.close();
+    } catch (error) {
+      await nextRecorder.close().catch(() => {});
+      throw error;
     }
-    await this.persistSessionSnapshot();
 
-    const snapshot = await loadYetSessionSnapshot(sessionId);
-    if (!snapshot) throw new Error(`No saved thread found for id '${sessionId}'.`);
-
-    this.threadTitleGenerationToken += 1;
-    this.threadTitleGeneration = null;
-    this.sessionId = snapshot.sessionId;
-    this.threadTitle = snapshot.title?.trim() ? snapshot.title.trim() : null;
+    this.sessionRecorder = nextRecorder;
+    this.sessionId = session.sessionId;
+    this.sessionRolloutPath = session.rolloutPath;
+    this.sessionCreatedAt = session.createdAt;
+    this.threadTitle = session.name?.trim() ? session.name.trim() : null;
     this.lastRequestId = null;
     this.historyNavigationIndex = null;
     this.historyNavigationDraft = '';
     this.preferredComposerColumn = null;
     this.sessionFileBaselines.clear();
-    this.store.replaceState(hydrateStateFromSnapshot(snapshot));
+    this.store.replaceState(hydrateStateFromSession(session));
     this.resetRenderedScreen();
-    this.maybeGenerateThreadTitle();
-    this.scheduleSessionSnapshot();
     this.render();
     this.showFooterNotice(`Switched to ${this.threadTitle ?? 'Untitled thread'}`);
-  }
-
-  private scheduleSessionSnapshot() {
-    if (this.sessionSaveTimer) clearTimeout(this.sessionSaveTimer);
-
-    this.sessionSaveTimer = setTimeout(() => {
-      this.sessionSaveTimer = null;
-      void this.persistSessionSnapshot();
-    }, 150);
-    this.sessionSaveTimer.unref?.();
   }
 
   private persistPreferences() {
@@ -831,34 +749,51 @@ export class AgentApp {
       this.store.setThinkingMode('auto');
     this.store.resetLastUsage();
     this.persistPreferences();
-    this.scheduleSessionSnapshot();
+    this.recordTurnContext();
     this.render();
   }
 
   private setThinkingMode(thinkingMode: AgentState['thinkingMode']) {
     this.store.setThinkingMode(thinkingMode);
     this.persistPreferences();
-    this.scheduleSessionSnapshot();
+    this.recordTurnContext();
     this.render();
   }
 
   private setPermissionMode(permissionMode: PermissionMode) {
     this.store.setPermissionMode(permissionMode);
     this.persistPreferences();
-    this.scheduleSessionSnapshot();
+    this.recordTurnContext();
     this.render();
   }
 
   private setPlanningMode(enabled: boolean) {
     this.store.setPlanningMode(enabled);
     this.store.resetLastUsage();
-    this.scheduleSessionSnapshot();
+    this.recordTurnContext();
     this.render();
   }
 
-  private setThreadTitle(title: string | null) {
+  private setThreadTitle(
+    title: string | null,
+    source: ThreadNameSource = 'manual',
+    expectedName?: string,
+  ) {
+    if (source === 'manual') {
+      this.threadTitleRequest?.cancel();
+      this.threadTitleRequest = null;
+    }
     this.threadTitle = title?.trim() ? title.trim() : null;
-    this.scheduleSessionSnapshot();
+    if (this.threadTitle) {
+      this.recordSessionEvent({
+        type: 'thread_name_updated',
+        payload: {
+          name: this.threadTitle,
+          source,
+          ...(expectedName ? { expectedName } : {}),
+        },
+      });
+    }
     this.render();
   }
 
@@ -928,7 +863,7 @@ export class AgentApp {
     const next = cycleThinkingMode(this.state.thinkingMode, this.state.currentModel);
     this.store.setThinkingMode(next);
     this.persistPreferences();
-    this.scheduleSessionSnapshot();
+    this.recordTurnContext();
     this.render();
     return next;
   }
@@ -1074,12 +1009,17 @@ export class AgentApp {
       });
       this.store.replaceMessages(result.messages);
       this.store.setLastUsage(result.usage);
-      this.store.pushHistoryEntry({
+      const entry = {
         type: 'compacted',
         summary: result.summary,
         previousMessageCount: result.previousMessageCount,
         nextMessageCount: result.nextMessageCount,
         automatic: !manual,
+      } as const;
+      this.store.pushHistoryEntry(entry);
+      this.recordSessionEvent({
+        type: 'compacted',
+        payload: { messages: result.messages, entry, usage: result.usage },
       });
       this.render();
       return true;
@@ -1096,9 +1036,23 @@ export class AgentApp {
   }
 
   private persistHistoryEntries(entries: HistoryEntry[]) {
-    for (const entry of entries) this.store.pushHistoryEntry(entry);
-    this.scheduleSessionSnapshot();
-    this.maybeGenerateThreadTitle();
+    for (const entry of entries) {
+      this.store.pushHistoryEntry(entry);
+      if (entry.type === 'tool') {
+        this.recordSessionEvent({
+          type: entry.status === 'running' ? 'tool_call' : 'tool_result',
+          payload: { entry },
+        });
+      } else if (entry.type === 'entry' && entry.kind === EntryKind.User) {
+        this.recordSessionEvent({ type: 'user_message', payload: { entries: [entry] } });
+      } else if (entry.type === 'entry' && entry.kind === EntryKind.Assistant) {
+        this.recordSessionEvent({ type: 'assistant_message', payload: { entries: [entry] } });
+      } else if (entry.type === 'entry' && entry.kind === EntryKind.Reasoning) {
+        this.recordSessionEvent({ type: 'reasoning', payload: { entries: [entry] } });
+      } else if (entry.type !== 'compacted') {
+        this.recordSessionEvent({ type: 'transcript_entry', payload: { entries: [entry] } });
+      }
+    }
     this.render();
   }
 
@@ -1307,6 +1261,7 @@ export class AgentApp {
         ) {
           this.store.setPlanningMode(previousPlanningMode);
           this.store.resetLastUsage();
+          this.recordTurnContext();
         }
 
         this.render();
@@ -1322,8 +1277,10 @@ export class AgentApp {
     }
 
     await this.promptHistory.add(trimmed, process.cwd());
-
-    this.persistEntry(EntryKind.User, replaceTokensWithSummary(trimmed));
+    const displayedUserMessage = replaceTokensWithSummary(trimmed);
+    this.startThreadTitleGeneration(displayedUserMessage);
+    this.recordTurnContext();
+    this.persistEntry(EntryKind.User, displayedUserMessage);
 
     const abortController = createAbortController(this.store);
 
@@ -1337,13 +1294,16 @@ export class AgentApp {
       if (this.shouldAutoCompact()) await this.compactConversation();
 
       const userContent = await this.buildUserMessageContent(trimmed);
-      this.store.pushMessage({ role: 'user', content: userContent });
+      const userMessage = { role: 'user' as const, content: userContent };
+      this.store.pushMessage(userMessage);
+      this.recordSessionEvent({ type: 'user_message', payload: { messages: [userMessage] } });
 
       const runtimeMessages = this.getRuntimeMessages();
       const estimatedPromptTokens = estimateMessageTokens(runtimeMessages);
       let completedPromptTokens = 0;
       let completedOutputTokens = 0;
       let completedReasoningTokens = 0;
+      let completedCachedInputTokens = 0;
       let currentStepOutputText = '';
       let currentStepReasoningText = '';
 
@@ -1385,6 +1345,25 @@ export class AgentApp {
               completedPromptTokens += event.usage.inputTokens;
               completedOutputTokens += event.usage.outputTokens;
               completedReasoningTokens += event.usage.reasoningTokens;
+              completedCachedInputTokens += event.usage.cachedInputTokens;
+              if (event.message) {
+                this.recordSessionEvent({
+                  type: 'assistant_message',
+                  payload: { messages: [event.message] },
+                });
+              }
+              this.recordSessionEvent({
+                type: 'usage_updated',
+                payload: {
+                  usage: {
+                    inputTokens: completedPromptTokens,
+                    outputTokens: completedOutputTokens,
+                    reasoningTokens: completedReasoningTokens,
+                    cachedInputTokens: completedCachedInputTokens,
+                  },
+                  totalCost: this.state.totalCost,
+                },
+              });
               currentStepOutputText = '';
               currentStepReasoningText = '';
               syncLiveUsage();
@@ -1396,7 +1375,12 @@ export class AgentApp {
                 toolName: event.call.name,
                 input: event.call.input,
               };
-              this.store.upsertToolEntry(createPendingToolEntry(part));
+              const entry = createPendingToolEntry(part);
+              this.store.upsertToolEntry(entry);
+              this.recordSessionEvent({
+                type: 'tool_call',
+                payload: { entry, message: event.message },
+              });
               this.scheduleRender();
               break;
             }
@@ -1408,7 +1392,12 @@ export class AgentApp {
                 output: event.result.output,
                 fileChanges: event.result.fileChanges,
               };
-              this.store.upsertToolEntry(createCompletedToolEntry(part));
+              const entry = createCompletedToolEntry(part);
+              this.store.upsertToolEntry(entry);
+              this.recordSessionEvent({
+                type: 'tool_result',
+                payload: { entry, message: event.message },
+              });
               if (event.result.fileChanges?.length)
                 await this.refreshSessionFileChanges(
                   event.result.fileChanges.map(fileChange => fileChange.path),
@@ -1416,17 +1405,21 @@ export class AgentApp {
               this.scheduleRender();
               break;
             }
-            case 'tool-error':
-              this.store.upsertToolEntry(
-                createFailedToolEntry({
-                  toolCallId: event.call.id,
-                  toolName: event.call.name,
-                  input: event.call.input,
-                  error: event.error,
-                }),
-              );
+            case 'tool-error': {
+              const entry = createFailedToolEntry({
+                toolCallId: event.call.id,
+                toolName: event.call.name,
+                input: event.call.input,
+                error: event.error,
+              });
+              this.store.upsertToolEntry(entry);
+              this.recordSessionEvent({
+                type: 'tool_result',
+                payload: { entry, message: event.message },
+              });
               this.scheduleRender();
               break;
+            }
           }
         },
       });
@@ -1520,6 +1513,7 @@ export class AgentApp {
       if (previousPlanningMode !== undefined && this.state.planningMode !== previousPlanningMode) {
         this.store.setPlanningMode(previousPlanningMode);
         this.store.resetLastUsage();
+        this.recordTurnContext();
       }
 
       this.render();
@@ -1556,7 +1550,6 @@ export class AgentApp {
       this.resetPreferredComposerColumn();
       this.store.replaceInput(history[this.historyNavigationIndex]);
       this.store.resetSelectedSuggestion();
-      this.scheduleSessionSnapshot();
       this.render();
       return true;
     }
@@ -1576,7 +1569,6 @@ export class AgentApp {
     }
 
     this.store.resetSelectedSuggestion();
-    this.scheduleSessionSnapshot();
     this.render();
     return true;
   }
@@ -1635,7 +1627,6 @@ export class AgentApp {
 
     if (this.getSuggestions().length === 0) this.store.resetSelectedSuggestion();
 
-    this.scheduleSessionSnapshot();
     this.render();
   }
 
@@ -1651,7 +1642,6 @@ export class AgentApp {
 
     if (this.getSuggestions().length === 0) this.store.resetSelectedSuggestion();
 
-    this.scheduleSessionSnapshot();
     this.render();
   }
 
@@ -1680,7 +1670,6 @@ export class AgentApp {
       this.showFooterNotice(
         `attached ${summaries.length === 1 ? summaries[0] : `${summaries.length} images`}`,
       );
-      this.scheduleSessionSnapshot();
       this.render();
     })();
     return true;
@@ -1844,7 +1833,6 @@ export class AgentApp {
     this.resetPreferredComposerColumn();
     this.store.resetComposer();
     this.store.resetSelectedSuggestion();
-    this.scheduleSessionSnapshot();
     this.render();
   }
 
@@ -1856,7 +1844,6 @@ export class AgentApp {
     this.resetPreferredComposerColumn();
 
     if (this.getSuggestions().length === 0) this.store.resetSelectedSuggestion();
-    this.scheduleSessionSnapshot();
     this.render();
   }
 

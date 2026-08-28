@@ -1,6 +1,6 @@
 import {
-  listYetSessionSnapshots,
-  listYetSessionSnapshotsSync,
+  listYetSessions,
+  listYetSessionsSync,
   type YetSessionListEntry,
 } from '@/agent/session-storage';
 import type { SlashCommand, SlashCommandArgumentSuggestion } from '../types';
@@ -24,7 +24,7 @@ function normalizeText(text: string | undefined, fallback: string) {
 }
 
 function listOtherWorkspaceSessions(currentSessionId: string) {
-  return listYetSessionSnapshotsSync({ cwd: process.cwd() }).filter(
+  return listYetSessionsSync({ cwd: process.cwd() }).filter(
     session => session.sessionId !== currentSessionId,
   );
 }
@@ -41,7 +41,7 @@ function createSessionSuggestion(
 }
 
 async function resolveTargetSession(requested: string, currentSessionId: string) {
-  const sessions = (await listYetSessionSnapshots({ cwd: process.cwd() })).filter(
+  const sessions = (await listYetSessions({ cwd: process.cwd() })).filter(
     session => session.sessionId !== currentSessionId,
   );
   const exact = sessions.find(session => session.sessionId === requested);

@@ -9,10 +9,29 @@ import { createToolRegistry } from '@/tools';
 import { runUserShell } from '@/agent/shell';
 import { getEarlyStdinStream } from '@/agent/early-stdin';
 import { getLastAssistantResponse } from '@/agent/messages';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { existsSync, statSync } from 'node:fs';
 import { OPENAI_MODEL_OPTIONS, getOpenAIProviderModelId } from '@/config';
 import { builtinSlashCommands, createSlashCommandRegistry, type SlashCommandContext } from '@/agent/slash-commands';
 import { createWorkspaceSandboxProfile, isPermissionMode, isPotentiallyUnsafeCommand, isWithinWorkspace, shouldPromptForTool } from '@/permissions';
+import {
+  SessionRecorder,
+  createTurnContextEvent,
+  listYetSessions,
+  listYetSessionsSync,
+  loadYetSession,
+  readYetRollout,
+} from '@/agent/session-storage';
+import {
+  createProvisionalThreadTitle,
+  createThreadTitlePrompt,
+  parseGeneratedThreadTitle,
+  startBackgroundThreadTitle,
+  THREAD_TITLE_MAX_CHARS,
+  THREAD_TITLE_MODEL,
+  THREAD_TITLE_PROMPT_MAX_BYTES,
+} from '@/agent/thread-title';
+import { EntryKind } from '@/types';
 
 function fail(error: unknown) {
   process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`);
@@ -248,6 +267,427 @@ try {
   check(!planningWriteExists, 'planning shell did not create the file');
 } finally {
   await rm(workspace, { recursive: true, force: true });
+}
+
+equal(
+  createProvisionalThreadTitle('  fix   the\nUnicode 🧪 persistence writer and more  '),
+  'fix the Unicode 🧪 persistence writer',
+  'provisional title is immediate, normalized, Unicode-safe, and bounded',
+);
+equal(THREAD_TITLE_MODEL, 'gpt-5.6-luna', 'background titles use the dedicated Luna model');
+equal(THREAD_TITLE_MAX_CHARS, 36, 'thread titles use the Codex display limit');
+equal(THREAD_TITLE_PROMPT_MAX_BYTES, 960, 'thread title prompts use the Codex byte limit');
+check(
+  Buffer.byteLength(createThreadTitlePrompt('🧪'.repeat(1_000))) <= 960,
+  'title prompt respects its UTF-8 byte budget',
+);
+equal(
+  parseGeneratedThreadTitle('{"title":"  Fix rollout recovery!  "}'),
+  'Fix rollout recovery',
+  'structured title output is normalized',
+);
+equal(parseGeneratedThreadTitle('<title>wrong shape</title>'), null, 'non-JSON title output is rejected');
+equal(
+  parseGeneratedThreadTitle('{"title":"Valid shape","extra":true}'),
+  null,
+  'structured title output rejects unknown fields',
+);
+
+const neverResolvingSignal: { value: AbortSignal | null } = { value: null };
+const neverResolvingTitle = startBackgroundThreadTitle({
+  userMessage: 'test shutdown',
+  expectedTitle: 'test shutdown',
+  getCurrentTitle: () => 'test shutdown',
+  applyTitle: () => {
+    throw new Error('a never-resolving title should not apply');
+  },
+  generate: (_message, signal) => {
+    neverResolvingSignal.value = signal;
+    return new Promise(() => {});
+  },
+});
+check(neverResolvingSignal.value !== null, 'background title generation starts without awaiting a result');
+neverResolvingTitle.cancel();
+check(neverResolvingSignal.value.aborted, 'background title generation can be abandoned during shutdown');
+
+let resolveLateTitle!: (title: string | null) => void;
+let currentTitle = 'provisional title';
+const lateTitle = startBackgroundThreadTitle({
+  userMessage: 'provisional title',
+  expectedTitle: 'provisional title',
+  getCurrentTitle: () => currentTitle,
+  applyTitle: title => {
+    currentTitle = title;
+  },
+  generate: () => new Promise(resolve => {
+    resolveLateTitle = resolve;
+  }),
+});
+currentTitle = 'Manual rename';
+resolveLateTitle('Generated title');
+await Promise.resolve();
+await Promise.resolve();
+equal(currentTitle, 'Manual rename', 'manual rename wins over a late generated title');
+lateTitle.cancel();
+
+let resolveExpectedTitle!: (title: string | null) => void;
+currentTitle = 'expected provisional';
+startBackgroundThreadTitle({
+  userMessage: 'expected provisional',
+  expectedTitle: 'expected provisional',
+  getCurrentTitle: () => currentTitle,
+  applyTitle: title => {
+    currentTitle = title;
+  },
+  generate: () => new Promise(resolve => {
+    resolveExpectedTitle = resolve;
+  }),
+});
+resolveExpectedTitle('Generated replacement');
+await Promise.resolve();
+await Promise.resolve();
+equal(currentTitle, 'Generated replacement', 'generated title replaces only its expected provisional title');
+
+currentTitle = 'failure fallback';
+startBackgroundThreadTitle({
+  userMessage: 'failure fallback',
+  expectedTitle: 'failure fallback',
+  getCurrentTitle: () => currentTitle,
+  applyTitle: title => {
+    currentTitle = title;
+  },
+  generate: async () => {
+    throw new Error('title service unavailable');
+  },
+});
+await Promise.resolve();
+await Promise.resolve();
+equal(currentTitle, 'failure fallback', 'failed title generation leaves the provisional title');
+
+const sessionHome = await mkdtemp(join(tmpdir(), 'yet-sessions-'));
+try {
+  const emptyRecorder = await SessionRecorder.open({
+    sessionId: 'empty-session',
+    cwd: sessionHome,
+    yetHome: sessionHome,
+  });
+  const emptyRolloutPath = emptyRecorder.rolloutPath;
+  await emptyRecorder.close();
+  check(!existsSync(emptyRolloutPath), 'empty sessions do not materialize rollout files');
+
+  const recorder = await SessionRecorder.open({
+    sessionId: 'event-session',
+    cwd: sessionHome,
+    yetHome: sessionHome,
+  });
+  check(
+    /\/sessions\/\d{4}\/\d{2}\/\d{2}\/rollout-[^/]+-event-session\.jsonl$/.test(
+      recorder.rolloutPath.replaceAll('\\', '/'),
+    ),
+    'new sessions use the dated rollout directory layout',
+  );
+  await rejects(
+    SessionRecorder.open({
+      sessionId: 'event-session',
+      cwd: sessionHome,
+      rolloutPath: recorder.rolloutPath,
+      yetHome: sessionHome,
+    }),
+    /already open/,
+    'a second process writer cannot open the same session',
+  );
+
+  const contextStore = createAgentStore();
+  contextStore.setCurrentModel('gpt-5.6-terra');
+  contextStore.setThinkingMode('medium');
+  recorder.record({
+    type: 'thread_name_updated',
+    payload: { name: 'Durable events', source: 'provisional' },
+  });
+  recorder.record(createTurnContextEvent(contextStore.getState()));
+  recorder.record({
+    type: 'user_message',
+    payload: {
+      entries: [{ type: 'entry', kind: EntryKind.User, text: 'Build durable sessions' }],
+    },
+  });
+  recorder.record({
+    type: 'user_message',
+    payload: { messages: [{ role: 'user', content: 'Build durable sessions' }] },
+  });
+  recorder.record({
+    type: 'tool_call',
+    payload: {
+      entry: {
+        type: 'tool',
+        toolCallId: 'tool-1',
+        toolName: 'shell',
+        input: { command: 'pwd' },
+        status: 'running',
+      },
+    },
+  });
+  recorder.record({
+    type: 'tool_result',
+    payload: {
+      entry: {
+        type: 'tool',
+        toolCallId: 'tool-1',
+        toolName: 'shell',
+        input: { command: 'pwd' },
+        output: sessionHome,
+        status: 'completed',
+      },
+    },
+  });
+  recorder.record({
+    type: 'reasoning',
+    payload: {
+      entries: [{ type: 'entry', kind: EntryKind.Reasoning, text: 'Inspect the writer.' }],
+    },
+  });
+  recorder.record({
+    type: 'assistant_message',
+    payload: {
+      messages: [{ role: 'assistant', content: 'The writer is ready.' }],
+      entries: [{ type: 'entry', kind: EntryKind.Assistant, text: 'The writer is ready.' }],
+    },
+  });
+  const compactedMessages = [
+    { role: 'assistant' as const, content: '<summary>durable compacted context</summary>' },
+  ];
+  recorder.record({
+    type: 'compacted',
+    payload: {
+      messages: compactedMessages,
+      entry: {
+        type: 'compacted',
+        summary: 'durable compacted context',
+        previousMessageCount: 2,
+        nextMessageCount: 1,
+        automatic: false,
+      },
+      usage: { inputTokens: 8, outputTokens: 3, reasoningTokens: 1, cachedInputTokens: 0 },
+    },
+  });
+  recorder.record({
+    type: 'transcript_entry',
+    payload: { entries: [{ type: 'plain', text: 'local transcript note' }] },
+  });
+  recorder.record({
+    type: 'usage_updated',
+    payload: {
+      usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 2, cachedInputTokens: 1 },
+      totalCost: 0,
+    },
+  });
+  for (let index = 0; index < 25; index += 1) {
+    recorder.record({
+      type: 'transcript_entry',
+      payload: { entries: [{ type: 'plain', text: `ordered-${index}` }] },
+    });
+  }
+  await recorder.close();
+
+  if (process.platform !== 'win32') {
+    equal(statSync(recorder.rolloutPath).mode & 0o777, 0o600, 'rollouts are private to the user');
+  }
+
+  const rollout = await readYetRollout(recorder.rolloutPath);
+  equal(rollout[0]?.type, 'session_meta', 'rollout starts with session metadata');
+  deepEqual(
+    rollout.map(line => line.ordinal),
+    rollout.map((_line, index) => index),
+    'queued rollout writes preserve contiguous ordinal order',
+  );
+  deepEqual(
+    rollout
+      .filter(line => line.type === 'transcript_entry')
+      .slice(-25)
+      .map(line => line.type === 'transcript_entry' ? line.payload.entries[0] : null)
+      .map(entry => entry?.type === 'plain' ? entry.text : null),
+    Array.from({ length: 25 }, (_value, index) => `ordered-${index}`),
+    'concurrent caller appends preserve event order',
+  );
+
+  const loaded = await loadYetSession('event-session', { yetHome: sessionHome });
+  check(loaded !== null, 'rollout session can be loaded');
+  equal(loaded.name, 'Durable events', 'rollout restores the session title');
+  equal(loaded.state.currentModel, 'gpt-5.6-terra', 'rollout restores the latest turn model');
+  deepEqual(loaded.state.messages, compactedMessages, 'compaction replaces replayed model context');
+  check(
+    loaded.state.historyEntries.some(entry => entry.type === 'compacted'),
+    'compaction metadata survives rollout replay',
+  );
+  check(
+    loaded.state.historyEntries.some(
+      entry => entry.type === 'tool' && entry.toolCallId === 'tool-1' && entry.status === 'completed',
+    ),
+    'rollout reducer applies tool result updates',
+  );
+
+  const indexed = listYetSessionsSync({ yetHome: sessionHome });
+  equal(indexed[0]?.title, 'Durable events', 'resume listing reads title metadata from the index');
+  equal(indexed[0]?.preview, 'Build durable sessions', 'resume index stores the first user preview');
+
+  const validRolloutContents = await readFile(recorder.rolloutPath, 'utf8');
+  await writeFile(recorder.rolloutPath, 'x'.repeat(Buffer.byteLength(validRolloutContents)));
+  check(
+    listYetSessionsSync({ yetHome: sessionHome }).some(entry => entry.sessionId === 'event-session'),
+    'healthy resume index does not parse every rollout body',
+  );
+  await writeFile(recorder.rolloutPath, validRolloutContents);
+
+  await rm(join(sessionHome, 'session_index.jsonl'), { force: true });
+  check(
+    (await listYetSessions({ yetHome: sessionHome })).some(
+      entry => entry.sessionId === 'event-session',
+    ),
+    'missing session index is rebuilt from canonical rollouts',
+  );
+
+  await writeFile(join(sessionHome, 'session_index.jsonl'), 'not valid json\n');
+  check(
+    (await listYetSessions({ yetHome: sessionHome })).some(
+      entry => entry.sessionId === 'event-session',
+    ),
+    'a corrupt session index is rebuilt from canonical rollouts',
+  );
+
+  const indexedRollout = await readYetRollout(recorder.rolloutPath);
+  const staleIndexTitleLine = {
+    timestamp: new Date().toISOString(),
+    ordinal: (indexedRollout.at(-1)?.ordinal ?? -1) + 1,
+    type: 'thread_name_updated',
+    payload: { name: 'Recovered index title', source: 'manual' },
+  };
+  await appendFile(recorder.rolloutPath, `${JSON.stringify(staleIndexTitleLine)}\n`);
+  equal(
+    (await listYetSessions({ yetHome: sessionHome })).find(
+      entry => entry.sessionId === 'event-session',
+    )?.title,
+    'Recovered index title',
+    'index lag after a canonical write is repaired from the changed rollout',
+  );
+  const staleGeneratedTitleLine = {
+    timestamp: new Date().toISOString(),
+    ordinal: staleIndexTitleLine.ordinal + 1,
+    type: 'thread_name_updated',
+    payload: {
+      name: 'Stale generated title',
+      source: 'generated',
+      expectedName: 'Durable events',
+    },
+  };
+  await appendFile(recorder.rolloutPath, `${JSON.stringify(staleGeneratedTitleLine)}\n`);
+  equal(
+    (await listYetSessions({ yetHome: sessionHome })).find(
+      entry => entry.sessionId === 'event-session',
+    )?.title,
+    'Recovered index title',
+    'rollout replay rejects a generated title after a manual rename',
+  );
+
+  await appendFile(recorder.rolloutPath, '{"timestamp":"partial');
+  const resumedRecorder = await SessionRecorder.open({
+    sessionId: 'event-session',
+    cwd: sessionHome,
+    rolloutPath: recorder.rolloutPath,
+    yetHome: sessionHome,
+  });
+  resumedRecorder.record({
+    type: 'transcript_entry',
+    payload: { entries: [{ type: 'plain', text: 'after recovery' }] },
+  });
+  await resumedRecorder.close();
+  const repairedContents = await readFile(recorder.rolloutPath, 'utf8');
+  check(!repairedContents.includes('"timestamp":"partial'), 'truncated final JSONL record is removed');
+  check(repairedContents.includes('after recovery'), 'writing continues after partial-tail recovery');
+
+  const duplicateOrdinalPath = join(sessionHome, 'duplicate-ordinal.jsonl');
+  await writeFile(
+    duplicateOrdinalPath,
+    [
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        ordinal: 7,
+        type: 'transcript_entry',
+        payload: { entries: [{ type: 'plain', text: 'first attempt' }] },
+      }),
+      JSON.stringify({
+        timestamp: new Date().toISOString(),
+        ordinal: 7,
+        type: 'transcript_entry',
+        payload: { entries: [{ type: 'plain', text: 'retry attempt' }] },
+      }),
+      '',
+    ].join('\n'),
+  );
+  const duplicateOrdinalLines = await readYetRollout(duplicateOrdinalPath);
+  equal(duplicateOrdinalLines.length, 1, 'same-ordinal retry records are deduplicated');
+  equal(
+    duplicateOrdinalLines[0]?.type === 'transcript_entry' &&
+      duplicateOrdinalLines[0].payload.entries[0]?.type === 'plain'
+      ? duplicateOrdinalLines[0].payload.entries[0].text
+      : null,
+    'retry attempt',
+    'the latest complete same-ordinal retry wins',
+  );
+
+  const interruptedRecorder = await SessionRecorder.open({
+    sessionId: 'interrupted-session',
+    cwd: sessionHome,
+    yetHome: sessionHome,
+  });
+  interruptedRecorder.record({
+    type: 'tool_call',
+    payload: {
+      entry: {
+        type: 'tool',
+        toolCallId: 'interrupted-tool',
+        toolName: 'shell',
+        input: { command: 'sleep 1' },
+        status: 'running',
+      },
+      message: {
+        role: 'tool-call',
+        callId: 'interrupted-tool',
+        name: 'shell',
+        input: { command: 'sleep 1' },
+      },
+    },
+  });
+  await interruptedRecorder.close();
+  const interrupted = await loadYetSession('interrupted-session', {
+    yetHome: sessionHome,
+  });
+  check(
+    interrupted?.state.historyEntries.some(
+      entry =>
+        entry.type === 'tool' &&
+        entry.toolCallId === 'interrupted-tool' &&
+        entry.status === 'failed',
+    ),
+    'unmatched tool calls resume as interrupted failures',
+  );
+  check(
+    interrupted?.state.messages.some(
+      message => message.role === 'tool-call' && message.callId === 'interrupted-tool',
+    ),
+    'completed tool-call model context survives an interrupted turn',
+  );
+  check(
+    interrupted?.state.messages.some(
+      message =>
+        message.role === 'tool-result' &&
+        message.callId === 'interrupted-tool' &&
+        message.output.includes('interrupted'),
+    ),
+    'interrupted tool calls receive a synthetic failed model result',
+  );
+
+} finally {
+  await rm(sessionHome, { recursive: true, force: true });
 }
 
 process.stdout.write(`1..${assertions}\n`);

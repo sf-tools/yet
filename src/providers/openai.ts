@@ -5,6 +5,7 @@ import type {
   Response,
   ResponseInputItem,
   ResponseStreamEvent,
+  ResponseTextConfig,
 } from 'openai/resources/responses/responses';
 
 import type { AgentChatMessage, AgentContent, AgentMessage, AgentUsage } from '@/agent/messages';
@@ -46,6 +47,8 @@ type StreamStepOptions = {
   previousResponseId?: string;
   toolOutputs?: ProviderToolOutput[];
   signal?: AbortSignal;
+  text?: ResponseTextConfig;
+  store?: boolean;
   onEvent?: (event: ProviderEvent) => void;
 };
 
@@ -164,8 +167,9 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
       tools: options.tools.map(functionTool),
       parallel_tool_calls: false,
       reasoning: reasoning(options.thinkingMode),
-      store: true,
+      store: options.store ?? true,
       stream: true,
+      ...(options.text ? { text: options.text } : {}),
       ...(options.previousResponseId
         ? { previous_response_id: options.previousResponseId }
         : {}),
@@ -224,6 +228,8 @@ export async function generateOpenAIText(options: {
   thinkingMode: ThinkingMode;
   messages: AgentMessage[];
   signal?: AbortSignal;
+  text?: ResponseTextConfig;
+  store?: boolean;
 }) {
   const step = await streamOpenAIResponse({ ...options, tools: [] });
   return { text: step.text, usage: step.usage, responseId: step.responseId };
