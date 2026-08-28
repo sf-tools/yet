@@ -223,15 +223,20 @@ function appendPrismToken(
   appendPrismToken(pieces, token.content as PrismTokenStream, ctx, types);
 }
 
-export function highlightedCodeBlock(code: string, language: string | null, ctx: RenderContext) {
-  if (!language) return textToBlock(code, Number.POSITIVE_INFINITY);
+export function highlightedCodeBlock(
+  code: string,
+  language: string | null,
+  ctx: RenderContext,
+  width = Number.POSITIVE_INFINITY,
+) {
+  if (!language) return textToBlock(code, width);
 
   const grammar = (Prism.languages as Record<string, Prism.Grammar | undefined>)[language];
-  if (!grammar) return textToBlock(code, Number.POSITIVE_INFINITY);
+  if (!grammar) return textToBlock(code, width);
 
   const pieces: InlinePiece[] = [];
   appendPrismToken(pieces, Prism.tokenize(code, grammar), ctx);
-  return wrapInlinePieces(pieces, Number.POSITIVE_INFINITY);
+  return wrapInlinePieces(pieces, width);
 }
 
 function collectInlineRange(
@@ -406,7 +411,7 @@ function renderCodeBlock(token: MarkdownToken, env: RenderEnv): Block {
   const rawLanguage = token.info.trim().split(/\s+/)[0] || null;
   const language = normalizeCodeLanguage(rawLanguage);
   const content = token.content.replace(/\n$/, '');
-  return highlightedCodeBlock(content, language, env.ctx);
+  return highlightedCodeBlock(content, language, env.ctx, env.width);
 }
 
 function appendBlock(out: Block, block: Block, withSpacing = true) {

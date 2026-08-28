@@ -31,7 +31,7 @@ import { renderChoicePrompt, renderOutputPreview } from '@/render/components/tra
 import { renderConfigPicker } from '@/render/components/config-picker';
 import { renderStatusPanel } from '@/render/components/status-panel';
 import { renderTextPrompt } from '@/render/components/text-prompt';
-import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/components/transcript-overlay';
+import { renderTranscriptDocument, renderTranscriptViewportParts } from '@/render/components/transcript-overlay';
 import { renderPendingInput } from '@/render/components/pending-input';
 import { IMAGE_MEDIA_TYPES, parseDroppedImagePaths } from './path-detect';
 import { copyTextToClipboard } from './clipboard-text';
@@ -70,7 +70,9 @@ import { createAgentStore, type AgentState, type AgentStore, type QueuedSubmissi
 import {
   clampTransientLines,
   clearTransientSequence,
+  diffScreenRowsSequence,
   patchTransientSequence,
+  reconcileTransientSequence,
   synchronizedTerminalSequence,
   takeBlockTail,
 } from './transient-terminal';
@@ -148,13 +150,6 @@ function commandActivityEnd(entries: HistoryEntry[], start: number) {
   return end;
 }
 
-function startsNewToolCell(entries: HistoryEntry[], index: number) {
-  if (index <= 0) return false;
-  const current = entries[index];
-  const previous = entries[index - 1];
-  return current?.type === 'tool' && previous?.type === 'tool' && !isCommandHistoryEntry(previous);
-}
-
 function estimateTokenCount(text: string) {
   return Math.max(0, Math.ceil(Array.from(text).length / 4));
 }
@@ -224,14 +219,19 @@ export class AgentApp {
   private backtrackPrimed = false;
   private backtrackHistoryIndex: number | null = null;
   private backtrackScrollPending = false;
-  private transcriptContentCache: {
+  private transcriptHistoryCache: {
     historyRevision: number;
     width: number;
-    reasoning: string;
-    assistant: string;
     highlightHistoryIndex: number | null;
     document: ReturnType<typeof renderTranscriptDocument>;
   } | null = null;
+  private transcriptLiveCache: {
+    width: number;
+    reasoning: string;
+    assistant: string;
+    block: Block;
+  } | null = null;
+  private lastTranscriptLines: string[] = [];
   private pendingHistoryRenderCache: {
     historyRevision: number;
     committedHistoryCount: number;
@@ -328,15 +328,8 @@ export class AgentApp {
   }
 
   private redrawTransientLines(lines: string[]) {
-    const clear = process.stdout.isTTY ? clearTransientSequence(this.transientLineCount) : '';
-    if (lines.length === 0) {
-      if (clear) process.stdout.write(synchronizedTerminalSequence(clear));
-      this.transientLineCount = 0;
-      this.lastTransientLines = [];
-      return;
-    }
-
-    process.stdout.write(synchronizedTerminalSequence(`${clear}${lines.join('\n')}`));
+    const sequence = reconcileTransientSequence(this.lastTransientLines, lines);
+    if (sequence) process.stdout.write(synchronizedTerminalSequence(sequence));
     this.transientLineCount = lines.length;
     this.lastTransientLines = [...lines];
   }
@@ -397,33 +390,32 @@ export class AgentApp {
     const lines: string[] = [];
     const startsConversation = this.committedHistoryCount === 0;
     const animatedAssistantIndex = this.getAnimatedAssistantIndex();
+    let renderedCell = !startsConversation;
+    const appendCell = (cell: string[]) => {
+      if (cell.length === 0) return;
+      if (renderedCell && lines.at(-1) !== '') lines.push('');
+      lines.push(...cell);
+      renderedCell = true;
+    };
 
     while (this.committedHistoryCount < this.state.historyEntries.length) {
       const index = this.committedHistoryCount;
       const entry = this.state.historyEntries[index];
-      if (startsNewToolCell(this.state.historyEntries, index) && lines.at(-1) !== '') {
-        lines.push('');
-      }
       if (isCommandHistoryEntry(entry)) {
         const end = commandActivityEnd(this.state.historyEntries, index);
         const commands = this.state.historyEntries.slice(index, end) as ToolHistoryEntry[];
         if (commandActivityIsRunning(commands)) break;
         if (this.state.busy && end === this.state.historyEntries.length) break;
-        lines.push(...serializeBlock(renderCommandActivity(commands, ctx)));
-        if (
-          this.state.historyEntries
-            .slice(end)
-            .some(nextEntry => this.shouldRenderHistoryEntry(nextEntry))
-        ) {
-          lines.push('');
-        }
+        appendCell(serializeBlock(renderCommandActivity(commands, ctx)));
         this.committedHistoryCount = end;
         continue;
       }
       if (entry.type === 'tool' && entry.status === 'running') break;
       if (index === animatedAssistantIndex) break;
 
-      if (this.shouldRenderHistoryEntry(entry)) lines.push(...serializeBlock(renderHistoryEntry(entry, ctx)));
+      if (this.shouldRenderHistoryEntry(entry)) {
+        appendCell(serializeBlock(renderHistoryEntry(entry, ctx)));
+      }
       this.committedHistoryCount += 1;
     }
 
@@ -445,32 +437,28 @@ export class AgentApp {
     }
 
     const pendingHistory: Block = [];
+    let renderedCell = this.committedHistoryCount > 0;
+    const appendCell = (cell: Block) => {
+      if (cell.length === 0) return;
+      if (renderedCell) pendingHistory.push(blankLine());
+      pendingHistory.push(...cell);
+      renderedCell = true;
+    };
     for (let index = this.committedHistoryCount; index < this.state.historyEntries.length;) {
       const entry = this.state.historyEntries[index];
-      if (startsNewToolCell(this.state.historyEntries, index)) {
-        pendingHistory.push(blankLine());
-      }
       if (isCommandHistoryEntry(entry)) {
         const end = commandActivityEnd(this.state.historyEntries, index);
-        pendingHistory.push(
-          ...renderCommandActivity(
-            this.state.historyEntries.slice(index, end) as ToolHistoryEntry[],
-            ctx,
+        appendCell(
+          renderCommandActivity(
+            this.state.historyEntries.slice(index, end) as ToolHistoryEntry[], ctx,
           ),
         );
-        if (
-          this.state.historyEntries
-            .slice(end)
-            .some(nextEntry => this.shouldRenderHistoryEntry(nextEntry))
-        ) {
-          pendingHistory.push(blankLine());
-        }
         index = end;
         continue;
       }
       if (this.shouldRenderHistoryEntry(entry)) {
-        pendingHistory.push(
-          ...renderHistoryEntry(entry, ctx, {
+        appendCell(
+          renderHistoryEntry(entry, ctx, {
             animateAssistant: index === animatedAssistantIndex,
           }),
         );
@@ -559,10 +547,10 @@ export class AgentApp {
     const bottomSections = [statusIndicator, pendingInput].filter(section => section.length > 0);
     const composerLead = bottomSections.length > 0
       ? [
+          blankLine(),
           ...bottomSections.flatMap((section, index) =>
             index === 0 ? section : [blankLine(), ...section],
           ),
-          blankLine(),
         ]
       : [blankLine()];
     const composerSurface = textPrompt ?? configPicker ?? statusPanel ?? choicePrompt ?? composer;
@@ -842,34 +830,49 @@ export class AgentApp {
       const historyRevision = this.store.getHistoryRevision();
       const reasoning = this.state.showThinking ? this.state.liveReasoningText : '';
       const assistant = this.state.liveAssistantText;
-      const cached = this.transcriptContentCache;
+      const cached = this.transcriptHistoryCache;
       if (
         !cached ||
         cached.historyRevision !== historyRevision ||
         cached.width !== columns ||
-        cached.reasoning !== reasoning ||
-        cached.assistant !== assistant ||
         cached.highlightHistoryIndex !== this.backtrackHistoryIndex
       ) {
-        this.transcriptContentCache = {
+        this.transcriptHistoryCache = {
           historyRevision,
           width: columns,
-          reasoning,
-          assistant,
           highlightHistoryIndex: this.backtrackHistoryIndex,
           document: renderTranscriptDocument(
             this.state.historyEntries,
-            { reasoning, assistant },
+            { reasoning: '', assistant: '' },
             ctx,
             { highlightHistoryIndex: this.backtrackHistoryIndex },
           ),
         };
       }
+      const liveCached = this.transcriptLiveCache;
+      if (
+        !liveCached ||
+        liveCached.width !== columns ||
+        liveCached.reasoning !== reasoning ||
+        liveCached.assistant !== assistant
+      ) {
+        this.transcriptLiveCache = {
+          width: columns,
+          reasoning,
+          assistant,
+          block: renderTranscriptDocument([], { reasoning, assistant }, ctx).block,
+        };
+      }
+      const historyBlock = this.transcriptHistoryCache?.document.block ?? [];
+      const liveBlock = this.transcriptLiveCache?.block ?? [];
+      const contentParts: Block[] = historyBlock.length > 0 && liveBlock.length > 0
+        ? [historyBlock, [blankLine()], liveBlock]
+        : [historyBlock, liveBlock];
+      const contentLength = contentParts.reduce((total, part) => total + part.length, 0);
       if (this.backtrackScrollPending && this.backtrackHistoryIndex !== null) {
         const contentHeight = Math.max(1, rows - 4);
-        const content = this.transcriptContentCache?.document.block ?? [];
-        const maxScroll = Math.max(0, content.length - contentHeight);
-        const range = this.transcriptContentCache?.document.entryRanges.get(this.backtrackHistoryIndex);
+        const maxScroll = Math.max(0, contentLength - contentHeight);
+        const range = this.transcriptHistoryCache?.document.entryRanges.get(this.backtrackHistoryIndex);
         if (range) {
           const desiredStart = Math.max(
             0,
@@ -879,14 +882,23 @@ export class AgentApp {
         }
         this.backtrackScrollPending = false;
       }
-      const rendered = renderTranscriptViewport(
-        this.transcriptContentCache?.document.block ?? [],
+      const rendered = renderTranscriptViewportParts(
+        contentParts,
         this.transcriptScrollOffset,
         ctx,
         { backtracking: this.backtrackHistoryIndex !== null },
       );
       this.transcriptScrollOffset = Math.min(this.transcriptScrollOffset, rendered.maxScroll);
-      process.stdout.write(synchronizedTerminalSequence(`\u001b[2J\u001b[H${serializeBlock(rendered.block).join('\n')}`));
+      const transcriptLines = serializeBlock(rendered.block);
+      const screenUpdate = diffScreenRowsSequence(this.lastTranscriptLines, transcriptLines, {
+        scrollRegion: {
+          startRow: 1,
+          endRow: Math.max(1, transcriptLines.length - 4),
+        },
+        terminalWidth: Math.max(1, columns - 1),
+      });
+      if (screenUpdate) process.stdout.write(synchronizedTerminalSequence(screenUpdate));
+      this.lastTranscriptLines = transcriptLines;
       this.lastRenderColumns = columns;
       this.lastRenderRows = rows;
       this.lastRenderAt = Date.now();
@@ -1678,7 +1690,9 @@ export class AgentApp {
     this.clearTransientBlock();
     this.transcriptOpen = true;
     this.transcriptScrollOffset = 0;
-    this.transcriptContentCache = null;
+    this.transcriptHistoryCache = null;
+    this.transcriptLiveCache = null;
+    this.lastTranscriptLines = [];
     process.stdout.write(TRANSCRIPT_SCREEN_ENTER);
     this.render();
   }
@@ -1717,7 +1731,7 @@ export class AgentApp {
     this.backtrackPrimed = true;
     this.backtrackHistoryIndex = indices.at(-1) ?? null;
     this.backtrackScrollPending = true;
-    this.transcriptContentCache = null;
+    this.transcriptHistoryCache = null;
     this.store.setFooterNotice(null);
     this.render();
   }
@@ -1729,7 +1743,7 @@ export class AgentApp {
     const next = Math.max(0, Math.min(indices.length - 1, position + delta));
     this.backtrackHistoryIndex = indices[next] ?? this.backtrackHistoryIndex;
     this.backtrackScrollPending = true;
-    this.transcriptContentCache = null;
+    this.transcriptHistoryCache = null;
     this.scheduleRender();
   }
 
@@ -1737,7 +1751,9 @@ export class AgentApp {
     if (!this.transcriptOpen) return;
     this.transcriptOpen = false;
     this.transcriptScrollOffset = 0;
-    this.transcriptContentCache = null;
+    this.transcriptHistoryCache = null;
+    this.transcriptLiveCache = null;
+    this.lastTranscriptLines = [];
     this.transientLineCount = 0;
     this.lastTransientLines = [];
     if (resetBacktrack) this.resetBacktrackState();

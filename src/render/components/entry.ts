@@ -397,7 +397,15 @@ export function renderHistoryEntry(
   if (entry.type === 'background_processes') return renderBackgroundProcessesEntry(entry, ctx);
   if (entry.type === 'separator') return renderSeparatorEntry(entry, ctx);
   if (entry.type === 'goal_summary') return renderGoalSummary(entry, ctx);
-  if (entry.type === 'ansi') return indent(rawBlock(entry.text), LEFT_MARGIN);
+  if (entry.type === 'ansi') {
+    if (ctx.transcriptMode) {
+      return indent(
+        wrapTextBlock(entry.text, Math.max(1, ctx.width - widthOf(LEFT_MARGIN))),
+        LEFT_MARGIN,
+      );
+    }
+    return indent(rawBlock(entry.text), LEFT_MARGIN);
+  }
   if (entry.type === 'plain')
     return indent(wrapTextBlock(entry.text, Math.max(1, ctx.width)), LEFT_MARGIN);
 

@@ -116,7 +116,11 @@ function parseResult(entry: ToolHistoryEntry): CommandResult {
 }
 
 function shellCommandLine(command: string, ctx: RenderContext, prefix: '$ ' | ''): Block {
-  const highlighted = highlightedCodeBlock(command, 'bash', ctx);
+  const availableWidth = Math.max(
+    1,
+    ctx.width - widthOf(LEFT_MARGIN) - widthOf(prefix),
+  );
+  const highlighted = highlightedCodeBlock(command, 'bash', ctx, availableWidth);
   if (highlighted.length === 0) return [line(span(prefix, chalk.magentaBright))];
   const [first, ...rest] = highlighted;
   return [
@@ -310,7 +314,16 @@ export function renderCommandActivity(
       if (index > 0) block.push(blankLine());
       block.push(...shellCommandLine(command.command, ctx, '$ '));
       if (command.result.output) {
-        block.push(...command.result.output.split('\n').map(text => line(span(text, command.failed ? chalk.redBright : undefined))));
+        const outputWidth = Math.max(1, ctx.width - widthOf(LEFT_MARGIN));
+        block.push(
+          ...command.result.output
+            .split('\n')
+            .flatMap(text => wrapTextBlock(
+              text,
+              outputWidth,
+              command.failed ? chalk.redBright : undefined,
+            )),
+        );
       }
       if (!command.running) block.push(statusLine(command.result, ctx));
     });

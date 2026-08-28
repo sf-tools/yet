@@ -97,15 +97,45 @@ export function renderTranscriptViewport(
   ctx: RenderContext,
   options: { backtracking?: boolean } = {},
 ): { block: Block; maxScroll: number } {
+  return renderTranscriptViewportParts([content], scrollOffset, ctx, options);
+}
+
+function sliceBlockParts(parts: readonly Block[], start: number, length: number) {
+  const visible: Block = [];
+  let offset = Math.max(0, start);
+  let remaining = Math.max(0, length);
+
+  for (const part of parts) {
+    if (remaining === 0) break;
+    if (offset >= part.length) {
+      offset -= part.length;
+      continue;
+    }
+    const slice = part.slice(offset, offset + remaining);
+    visible.push(...slice);
+    remaining -= slice.length;
+    offset = 0;
+  }
+
+  return visible;
+}
+
+export function renderTranscriptViewportParts(
+  contentParts: readonly Block[],
+  scrollOffset: number,
+  ctx: RenderContext,
+  options: { backtracking?: boolean } = {},
+): { block: Block; maxScroll: number } {
   const contentHeight = Math.max(1, ctx.height - 4);
-  const maxScroll = Math.max(0, content.length - contentHeight);
+  const contentLength = contentParts.reduce((total, part) => total + part.length, 0);
+  const maxScroll = Math.max(0, contentLength - contentHeight);
   const clampedOffset = Math.max(0, Math.min(scrollOffset, maxScroll));
   const start = Math.max(0, maxScroll - clampedOffset);
-  const visible = content.slice(start, start + contentHeight);
+  const visible = sliceBlockParts(contentParts, start, contentHeight);
   while (visible.length < contentHeight) visible.push(line());
   const percentage = maxScroll === 0
     ? 100
-    : Math.max(0, Math.min(100, Math.round(((start + contentHeight) / content.length) * 100)));
+    : Math.max(0, Math.min(100, Math.round(((start + contentHeight) / contentLength) * 100)));
 
   return {
     block: [
