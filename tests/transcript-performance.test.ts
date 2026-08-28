@@ -8,7 +8,7 @@ import { createTheme } from '../src/theme';
 import { widthOf } from '../src/text';
 import { renderCommandActivity } from '../src/render/components/tools/command-activity';
 import { TranscriptHistoryLoader } from '../src/agent/transcript-history-loader';
-import { EntryKind } from '../src/types';
+import { EntryKind, type HistoryEntry } from '../src/types';
 import { check, equal } from './harness';
 
 const context = createRenderContext(createTheme(), true, 100, 40);
@@ -71,4 +71,28 @@ equal(
     context,
   ).block).join('\n'),
   'chunked transcript history preserves the full rendered document',
+);
+
+const commandGroupEntries: HistoryEntry[] = [
+  { type: 'entry', kind: EntryKind.Assistant, text: 'before commands' },
+  ...Array.from({ length: 6 }, (_, index) => ({
+    type: 'tool' as const,
+    toolCallId: `command-${index}`,
+    toolName: 'exec_command',
+    input: { cmd: `printf command-${index}` },
+    output: JSON.stringify({ output: `command-${index}`, exit_code: 0 }),
+    status: 'completed' as const,
+  })),
+  { type: 'entry', kind: EntryKind.Assistant, text: 'after commands' },
+];
+const commandGroupLoader = new TranscriptHistoryLoader(commandGroupEntries, context);
+while (commandGroupLoader.loadMore(3)) {}
+equal(
+  serializeBlock(commandGroupLoader.contentParts().flat()).join('\n'),
+  serializeBlock(renderTranscriptDocument(
+    commandGroupEntries,
+    { reasoning: '', assistant: '' },
+    context,
+  ).block).join('\n'),
+  'incremental transcript chunks never split one command activity cell',
 );

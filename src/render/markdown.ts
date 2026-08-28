@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import MarkdownIt from 'markdown-it';
+import { basename, extname } from 'node:path';
 import Prism from 'prismjs';
 
 import 'prismjs/components/prism-markup.js';
@@ -8,8 +9,37 @@ import 'prismjs/components/prism-javascript.js';
 import 'prismjs/components/prism-jsx.js';
 import 'prismjs/components/prism-typescript.js';
 import 'prismjs/components/prism-tsx.js';
+import 'prismjs/components/prism-css.js';
+import 'prismjs/components/prism-c.js';
+import 'prismjs/components/prism-cpp.js';
+import 'prismjs/components/prism-csharp.js';
+import 'prismjs/components/prism-java.js';
+import 'prismjs/components/prism-kotlin.js';
+import 'prismjs/components/prism-swift.js';
+import 'prismjs/components/prism-ruby.js';
+import 'prismjs/components/prism-markup-templating.js';
+import 'prismjs/components/prism-php.js';
+import 'prismjs/components/prism-objectivec.js';
+import 'prismjs/components/prism-lua.js';
+import 'prismjs/components/prism-elixir.js';
+import 'prismjs/components/prism-haskell.js';
+import 'prismjs/components/prism-scala.js';
+import 'prismjs/components/prism-dart.js';
+import 'prismjs/components/prism-graphql.js';
+import 'prismjs/components/prism-scss.js';
+import 'prismjs/components/prism-sass.js';
+import 'prismjs/components/prism-less.js';
 import 'prismjs/components/prism-json.js';
+import 'prismjs/components/prism-json5.js';
 import 'prismjs/components/prism-bash.js';
+import 'prismjs/components/prism-powershell.js';
+import 'prismjs/components/prism-perl.js';
+import 'prismjs/components/prism-r.js';
+import 'prismjs/components/prism-wasm.js';
+import 'prismjs/components/prism-zig.js';
+import 'prismjs/components/prism-docker.js';
+import 'prismjs/components/prism-makefile.js';
+import 'prismjs/components/prism-ini.js';
 import 'prismjs/components/prism-diff.js';
 import 'prismjs/components/prism-python.js';
 import 'prismjs/components/prism-go.js';
@@ -34,22 +64,115 @@ const md = new MarkdownIt({
 });
 
 const CODE_LANGUAGE_ALIASES: Record<string, string> = {
+  c: 'c',
+  cc: 'cpp',
+  cpp: 'cpp',
+  cxx: 'cpp',
+  h: 'c',
+  hh: 'cpp',
+  hpp: 'cpp',
+  hxx: 'cpp',
+  cs: 'csharp',
+  'c#': 'csharp',
   cjs: 'javascript',
   console: 'bash',
+  dockerfile: 'docker',
+  ex: 'elixir',
+  exs: 'elixir',
+  gql: 'graphql',
   html: 'markup',
   htm: 'markup',
   js: 'javascript',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  make: 'makefile',
+  m: 'objectivec',
+  mm: 'objectivec',
   mjs: 'javascript',
+  'objective-c': 'objectivec',
+  ps1: 'powershell',
   rs: 'rust',
   py: 'python',
   shell: 'bash',
   sh: 'bash',
+  svg: 'markup',
   text: 'plain',
   plaintext: 'plain',
   ts: 'typescript',
+  xml: 'markup',
   yml: 'yaml',
   zsh: 'bash',
 };
+
+const SPECIAL_FILE_LANGUAGES: Record<string, string> = {
+  dockerfile: 'docker',
+  makefile: 'makefile',
+};
+
+const MAX_HIGHLIGHT_BYTES = 512 * 1024;
+const MAX_HIGHLIGHT_LINES = 10_000;
+const MAX_HIGHLIGHT_LINE_LENGTH = 4 * 1024;
+
+type SyntaxStyles = {
+  comment: Style;
+  keyword: Style;
+  number: Style;
+  string: Style;
+  regex: Style;
+  function: Style;
+  variable: Style;
+  type: Style;
+  property: Style;
+  operator: Style;
+  punctuation: Style;
+  deleted: Style;
+  inserted: Style;
+};
+
+function colorStyle(hex: string): Style {
+  return value => chalk.hex(hex)(value);
+}
+
+function createSyntaxStyles(palette: Record<keyof SyntaxStyles, string>): SyntaxStyles {
+  return Object.fromEntries(
+    Object.entries(palette).map(([name, color]) => [name, colorStyle(color)]),
+  ) as SyntaxStyles;
+}
+
+// Codex defaults to the adaptive Catppuccin Mocha/Latte syntax themes. Keep
+// this shared palette behind both Markdown code blocks and diff rows so the
+// same token has the same color everywhere.
+const DARK_SYNTAX_STYLES = createSyntaxStyles({
+  comment: '#7f849c',
+  keyword: '#cba6f7',
+  number: '#fab387',
+  string: '#a6e3a1',
+  regex: '#f5c2e7',
+  function: '#89b4fa',
+  variable: '#cdd6f4',
+  type: '#f9e2af',
+  property: '#89b4fa',
+  operator: '#94e2d5',
+  punctuation: '#9399b2',
+  deleted: '#f38ba8',
+  inserted: '#a6e3a1',
+});
+
+const LIGHT_SYNTAX_STYLES = createSyntaxStyles({
+  comment: '#8c8fa1',
+  keyword: '#8839ef',
+  number: '#fe640b',
+  string: '#40a02b',
+  regex: '#ea76cb',
+  function: '#1e66f5',
+  variable: '#4c4f69',
+  type: '#df8e1d',
+  property: '#1e66f5',
+  operator: '#179299',
+  punctuation: '#7c7f93',
+  deleted: '#d20f39',
+  inserted: '#40a02b',
+});
 
 type MarkdownToken = ReturnType<typeof md.parse>[number];
 type PrismTokenStream = string | Prism.Token | PrismTokenStream[];
@@ -79,8 +202,6 @@ function appendSegment(pieces: InlinePiece[], text: string, style?: Style) {
 }
 
 function appendBreak(pieces: InlinePiece[]) {
-  const last = pieces[pieces.length - 1];
-  if (last?.type === 'break') return;
   pieces.push({ type: 'break' });
 }
 
@@ -171,35 +292,61 @@ export function normalizeCodeLanguage(language: string | null) {
   return (Prism.languages as Record<string, unknown>)[resolved] ? resolved : null;
 }
 
+export function codeLanguageForPath(path: string) {
+  const filename = basename(path).toLowerCase();
+  const candidate = SPECIAL_FILE_LANGUAGES[filename] ?? extname(filename).slice(1);
+  return normalizeCodeLanguage(candidate || null);
+}
+
+export function exceedsSyntaxHighlightLimits(code: string) {
+  if (code.length > MAX_HIGHLIGHT_BYTES || Buffer.byteLength(code) > MAX_HIGHLIGHT_BYTES)
+    return true;
+
+  let lines = 1;
+  let lineLength = 0;
+  for (const character of code) {
+    if (character === '\n') {
+      lines += 1;
+      lineLength = 0;
+      if (lines > MAX_HIGHLIGHT_LINES) return true;
+      continue;
+    }
+    lineLength += character.length;
+    if (lineLength > MAX_HIGHLIGHT_LINE_LENGTH) return true;
+  }
+  return false;
+}
+
 function hasCodeType(types: string[], ...candidates: string[]) {
   return candidates.some(candidate => types.includes(candidate));
 }
 
 function codeTokenStyle(types: string[], ctx: RenderContext): Style | undefined {
+  const syntax = ctx.theme.isLight() ? LIGHT_SYNTAX_STYLES : DARK_SYNTAX_STYLES;
   const styles: Style[] = [];
 
-  if (hasCodeType(types, 'comment', 'prolog', 'doctype', 'cdata')) styles.push(ctx.theme.dimmed);
+  if (hasCodeType(types, 'comment', 'prolog', 'doctype', 'cdata')) styles.push(syntax.comment);
   if (hasCodeType(types, 'keyword', 'atrule', 'important'))
-    styles.push(value => chalk.cyanBright(value));
+    styles.push(syntax.keyword);
   if (hasCodeType(types, 'boolean', 'number', 'constant', 'symbol'))
-    styles.push(value => chalk.magentaBright(value));
+    styles.push(syntax.number);
   if (hasCodeType(types, 'string', 'char', 'attr-value', 'template-string'))
-    styles.push(value => chalk.greenBright(value));
-  if (hasCodeType(types, 'regex')) styles.push(value => chalk.redBright(value));
+    styles.push(syntax.string);
+  if (hasCodeType(types, 'regex')) styles.push(syntax.regex);
   if (hasCodeType(types, 'function', 'function-variable'))
-    styles.push(value => chalk.blueBright(value));
-  if (hasCodeType(types, 'class-name', 'builtin')) styles.push(value => chalk.white(value));
+    styles.push(syntax.function);
+  if (hasCodeType(types, 'class-name', 'builtin')) styles.push(syntax.type);
   if (hasCodeType(types, 'property', 'tag', 'selector', 'namespace', 'attr-name'))
-    styles.push(value => chalk.cyan(value));
+    styles.push(syntax.property);
   if (hasCodeType(types, 'operator', 'entity', 'url'))
-    styles.push(value => chalk.cyanBright(value));
-  if (hasCodeType(types, 'punctuation')) styles.push(ctx.theme.subtle);
-  if (hasCodeType(types, 'deleted')) styles.push(value => chalk.red(value));
-  if (hasCodeType(types, 'inserted')) styles.push(value => chalk.green(value));
+    styles.push(syntax.operator);
+  if (hasCodeType(types, 'punctuation')) styles.push(syntax.punctuation);
+  if (hasCodeType(types, 'deleted')) styles.push(syntax.deleted);
+  if (hasCodeType(types, 'inserted')) styles.push(syntax.inserted);
   if (hasCodeType(types, 'italic')) styles.push(value => chalk.italic(value));
   if (hasCodeType(types, 'bold')) styles.push(value => chalk.bold(value));
 
-  return composeStyles(...styles);
+  return composeStyles(styles.length > 0 ? undefined : syntax.variable, ...styles);
 }
 
 function appendPrismToken(
@@ -223,20 +370,29 @@ function appendPrismToken(
   appendPrismToken(pieces, token.content as PrismTokenStream, ctx, types);
 }
 
+export function highlightedCodeLines(
+  code: string,
+  language: string | null,
+  ctx: RenderContext,
+  width = Number.POSITIVE_INFINITY,
+) {
+  if (!language || exceedsSyntaxHighlightLimits(code)) return null;
+
+  const grammar = (Prism.languages as Record<string, Prism.Grammar | undefined>)[language];
+  if (!grammar) return null;
+
+  const pieces: InlinePiece[] = [];
+  appendPrismToken(pieces, Prism.tokenize(code, grammar), ctx);
+  return wrapInlinePieces(pieces, width);
+}
+
 export function highlightedCodeBlock(
   code: string,
   language: string | null,
   ctx: RenderContext,
   width = Number.POSITIVE_INFINITY,
 ) {
-  if (!language) return textToBlock(code, width);
-
-  const grammar = (Prism.languages as Record<string, Prism.Grammar | undefined>)[language];
-  if (!grammar) return textToBlock(code, width);
-
-  const pieces: InlinePiece[] = [];
-  appendPrismToken(pieces, Prism.tokenize(code, grammar), ctx);
-  return wrapInlinePieces(pieces, width);
+  return highlightedCodeLines(code, language, ctx, width) ?? textToBlock(code, width);
 }
 
 function collectInlineRange(

@@ -2542,7 +2542,15 @@ export class AgentApp {
       this.activeLoopTurnGeneration = null;
     }
     const loop = this.activeLoop;
-    if (!loop || loop.generation !== generation || loop.intervalMs === null || loop.timer) return;
+    if (!loop || loop.generation !== generation || loop.timer) return;
+    if (loop.intervalMs === null) {
+      this.stopLoop();
+      this.persistEntry(
+        EntryKind.Error,
+        'Loop stopped because the model did not schedule its next iteration.',
+      );
+      return;
+    }
     this.armLoopTimer(generation, loop.intervalMs);
   }
 

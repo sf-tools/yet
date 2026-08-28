@@ -22,7 +22,7 @@ import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/com
 import { createRenderContext, serializeBlock } from '@/render';
 import { createTheme } from '@/theme';
 import { EntryKind, type ChoiceRequest, type HistoryEntry, type StatusPanelState, type ThreadGoal } from '@/types';
-import { check, deepEqual, equal } from './harness';
+import { check, deepEqual, equal, rejects } from './harness';
 
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
@@ -132,14 +132,27 @@ await loopCommand.execute(loopContext, {
 });
 equal(activeLoop, null, '/loop stop ends the active loop');
 check(loopEntries.length === 2, '/loop start and stop both render a durable status cell');
+await rejects(
+  Promise.resolve().then(() => loopCommand.execute(loopContext, {
+    raw: '/loop /status',
+    invocation: 'loop',
+    argsText: '/status',
+    argv: ['/status'],
+  })),
+  /self-paced loops require an agent prompt/,
+  'self-paced loops reject slash commands that cannot invoke schedule_loop',
+);
 
 const loopRuntimeApp = new AgentApp({ initialState: createAgentStore().getState() });
 const loopRuntime = loopRuntimeApp as unknown as {
   store: ReturnType<typeof createAgentStore>;
+  tools: { list(): Array<{ name: string }> };
   render(): void;
   drainingQueuedSubmissions: boolean;
   activeLoopTurnGeneration: number | null;
   startLoop(prompt: string, intervalMs: number | null): { replaced: boolean };
+  getActiveLoop(): ActiveLoopSummary | null;
+  finishLoopIteration(generation: number): void;
   scheduleLoopWakeup(request: { delaySeconds: number; reason: string }): {
     stopped: boolean;
     scheduledFor: number | null;
@@ -153,11 +166,24 @@ loopRuntime.startLoop('check the build', null);
 const queuedLoop = loopRuntime.store.getState().queuedSubmissions[0];
 check(typeof queuedLoop?.loopGeneration === 'number', 'starting /loop queues its first iteration immediately');
 loopRuntime.activeLoopTurnGeneration = queuedLoop!.loopGeneration!;
+check(
+  loopRuntime.tools.list().some(tool => tool.name === 'schedule_loop'),
+  'schedule_loop is exposed only while a self-paced loop iteration is running',
+);
 const pacedWakeup = loopRuntime.scheduleLoopWakeup({ delaySeconds: 1, reason: 'Retry soon.' });
 equal(pacedWakeup.delaySeconds, 60, 'model-paced loops clamp wakeups to the safe minimum');
 check(pacedWakeup.scheduledFor !== null, 'model-paced loops arm their next wakeup');
 check(loopRuntime.stopLoop(), 'runtime loops can be stopped');
+check(
+  !loopRuntime.tools.list().some(tool => tool.name === 'schedule_loop'),
+  'schedule_loop is hidden outside a self-paced loop iteration',
+);
 equal(loopRuntime.store.getState().queuedSubmissions.length, 0, 'stopping a loop removes its queued iterations');
+loopRuntime.startLoop('check without scheduling', null);
+const unscheduledLoop = loopRuntime.store.getState().queuedSubmissions[0];
+loopRuntime.activeLoopTurnGeneration = unscheduledLoop!.loopGeneration!;
+loopRuntime.finishLoopIteration(unscheduledLoop!.loopGeneration!);
+equal(loopRuntime.getActiveLoop(), null, 'a model-paced loop cannot remain silently stuck without a wakeup');
 
 const separatorContext = createRenderContext(createTheme(), true, 80, 20);
 const shortSeparator = serializeBlock(

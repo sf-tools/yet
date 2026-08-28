@@ -1,13 +1,18 @@
 import { renderTranscriptDocument } from '@/render/components/transcript-overlay';
+import { isCommandToolEntry } from '@/render/components/tools/command-activity';
 import { blankLine } from '@/render/primitives';
 import type { Block, RenderContext } from '@/render/types';
-import type { HistoryEntry } from '@/types';
+import type { HistoryEntry, ToolHistoryEntry } from '@/types';
 
 type TranscriptHistoryChunk = {
   start: number;
   end: number;
   document: ReturnType<typeof renderTranscriptDocument>;
 };
+
+function isCommandHistoryEntry(entry: HistoryEntry | undefined): entry is ToolHistoryEntry {
+  return entry?.type === 'tool' && isCommandToolEntry(entry);
+}
 
 export class TranscriptHistoryLoader {
   private readonly entries: readonly HistoryEntry[];
@@ -38,7 +43,17 @@ export class TranscriptHistoryLoader {
   loadMore(maxEntries: number) {
     if (this.done) return false;
     const end = this.nextEnd;
-    const start = Math.max(0, end - Math.max(1, Math.floor(maxEntries)));
+    let start = Math.max(0, end - Math.max(1, Math.floor(maxEntries)));
+
+    // A command activity is one transcript cell. Keep the entire consecutive
+    // exec/write_stdin run in one chunk so incremental loading cannot change
+    // its grouping, spacing, or rendered summary.
+    while (
+      start > 0 &&
+      isCommandHistoryEntry(this.entries[start]) &&
+      isCommandHistoryEntry(this.entries[start - 1])
+    ) start -= 1;
+
     this.chunks.unshift(this.renderChunk(start, end));
     this.nextEnd = start;
     return true;

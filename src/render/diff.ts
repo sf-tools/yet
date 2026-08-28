@@ -1,9 +1,13 @@
 import chalk from 'chalk';
 import { homedir } from 'node:os';
-import { extname, isAbsolute, relative } from 'node:path';
+import { isAbsolute, relative } from 'node:path';
 
 import { formatWorkspacePath, widthOf } from '@/text';
-import { highlightedCodeBlock, normalizeCodeLanguage } from './markdown';
+import {
+  codeLanguageForPath,
+  exceedsSyntaxHighlightLimits,
+  highlightedCodeLines,
+} from './markdown';
 import { blankLine, line, rawLine, span } from './primitives';
 import { serializeSegments } from './serialize';
 import type { Block, RenderContext, Segment, Style, StyledLine } from './types';
@@ -29,23 +33,6 @@ const LIGHT_DELETE_BACKGROUND = '#ffebe9';
 const LIGHT_ADD_GUTTER_BACKGROUND = '#aceebb';
 const LIGHT_DELETE_GUTTER_BACKGROUND = '#ffcecb';
 const LIGHT_GUTTER_FOREGROUND = '#1f2328';
-
-const FILE_LANGUAGE_ALIASES: Record<string, string> = {
-  cjs: 'javascript',
-  htm: 'markup',
-  html: 'markup',
-  js: 'javascript',
-  jsx: 'jsx',
-  md: 'markdown',
-  mjs: 'javascript',
-  py: 'python',
-  rs: 'rust',
-  sh: 'bash',
-  ts: 'typescript',
-  tsx: 'tsx',
-  yml: 'yaml',
-  zsh: 'bash',
-};
 
 function composeStyles(...styles: Array<Style | undefined>): Style | undefined {
   const active = styles.filter(Boolean) as Style[];
@@ -252,21 +239,20 @@ function signStyle(kind: DiffLineKind): Style | undefined {
 function codeSegments(
   diffLine: ParsedDiffLine,
   highlighted: Segment[] | undefined,
-  language: string | null,
   ctx: RenderContext,
 ) {
   const segments = highlighted?.map(segment => ({ ...segment })) ?? [span(diffLine.text)];
   const colorLevel = chalk.level ?? 0;
 
   return segments.map(segment => {
-    const fallbackDiffStyle = language
+    const fallbackDiffStyle = highlighted
       ? undefined
       : diffLine.kind === 'insert'
         ? (!ctx.theme.isLight() || colorLevel < 2 ? chalk.green : undefined)
         : diffLine.kind === 'delete'
           ? (!ctx.theme.isLight() || colorLevel < 2 ? chalk.red : undefined)
           : undefined;
-    const deletionOverlay = language && diffLine.kind === 'delete' ? ctx.theme.dimmed : undefined;
+    const deletionOverlay = highlighted && diffLine.kind === 'delete' ? ctx.theme.dimmed : undefined;
     return span(
       segment.text,
       composeStyles(segment.style, fallbackDiffStyle, deletionOverlay),
@@ -277,7 +263,6 @@ function codeSegments(
 function renderDiffLine(
   diffLine: ParsedDiffLine,
   highlighted: Segment[] | undefined,
-  language: string | null,
   numberWidth: number,
   innerWidth: number,
   ctx: RenderContext,
@@ -287,7 +272,7 @@ function renderDiffLine(
     : diffLine.newLineNumber;
   const availableContentWidth = Math.max(1, innerWidth - numberWidth - 2);
   const chunks = wrapSegments(
-    codeSegments(diffLine, highlighted, language, ctx),
+    codeSegments(diffLine, highlighted, ctx),
     availableContentWidth,
   );
   const lineBackground = backgroundStyle(diffLine.kind, ctx);
@@ -316,8 +301,10 @@ function renderFileDiff(file: FileChange, ctx: RenderContext): Block {
   const hunks = parseUnifiedDiff(file.diff);
   if (hunks.length === 0) return [];
 
-  const extension = extname(file.path).slice(1).toLowerCase();
-  const language = normalizeCodeLanguage((FILE_LANGUAGE_ALIASES[extension] ?? extension) || null);
+  const detectedLanguage = codeLanguageForPath(file.path);
+  const language = detectedLanguage && !exceedsSyntaxHighlightLimits(file.diff)
+    ? detectedLanguage
+    : null;
   const numberWidth = lineNumberWidth(hunks);
   const innerWidth = Math.max(1, ctx.width - 5);
   const output: Block = [];
@@ -334,9 +321,9 @@ function renderFileDiff(file: FileChange, ctx: RenderContext): Block {
     }
 
     const highlightedLines = language
-      ? highlightedCodeBlock(hunk.lines.map(diffLine => diffLine.text).join('\n'), language, ctx)
-      : [];
-    const hasAlignedHighlighting = highlightedLines.length === hunk.lines.length;
+      ? highlightedCodeLines(hunk.lines.map(diffLine => diffLine.text).join('\n'), language, ctx)
+      : null;
+    const hasAlignedHighlighting = highlightedLines?.length === hunk.lines.length;
     hunk.lines.forEach((diffLine, lineIndex) => {
       const highlighted = hasAlignedHighlighting && highlightedLines[lineIndex]?.type === 'styled'
         ? highlightedLines[lineIndex].segments
@@ -345,7 +332,6 @@ function renderFileDiff(file: FileChange, ctx: RenderContext): Block {
         ...renderDiffLine(
           diffLine,
           highlighted,
-          language,
           numberWidth,
           innerWidth,
           ctx,

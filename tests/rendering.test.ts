@@ -1,3 +1,4 @@
+import chalk from 'chalk';
 import { getLastAssistantResponse } from '@/agent/messages';
 import {
   BLOCK_STREAM_CATCH_UP_AGE_MS,
@@ -12,7 +13,7 @@ import { renderComposer } from '@/render/components/composer';
 import { renderStatusIndicator } from '@/render/components/status-indicator';
 import { renderCommandActivity } from '@/render/components/tools/command-activity';
 import { renderTranscriptOverlay } from '@/render/components/transcript-overlay';
-import { renderMarkdown } from '@/render/markdown';
+import { codeLanguageForPath, highlightedCodeBlock, renderMarkdown } from '@/render/markdown';
 import {
   hideWebLinkDestination,
   osc8Hyperlink,
@@ -122,6 +123,30 @@ const renderedMarkdown = serializeBlock(
     76,
   ),
 ).join('\n');
+
+equal(codeLanguageForPath('Dockerfile'), 'docker', 'shared syntax detection handles extensionless files');
+equal(codeLanguageForPath('native/widget.cpp'), 'cpp', 'shared syntax detection handles C++ extensions');
+const previousChalkLevel = chalk.level;
+chalk.level = 3;
+try {
+  const sharedSyntax = serializeBlock(highlightedCodeBlock(
+    "export const answer: number = 42;\n\nconsole.log('ok');",
+    'typescript',
+    renderContext,
+  )).join('\n');
+  equal(
+    stripAnsi(sharedSyntax).split('\n').length,
+    3,
+    'shared syntax highlighting preserves consecutive source lines exactly',
+  );
+  check(
+    sharedSyntax.includes('\u001b[38;2;203;166;247m') &&
+      sharedSyntax.includes('\u001b[38;2;250;179;135m'),
+    'shared syntax highlighting uses the Codex Catppuccin keyword and number colors',
+  );
+} finally {
+  chalk.level = previousChalkLevel;
+}
 check(
   renderedMarkdown.includes(
     '# Heading\n\nText with bold and inline code.\n\n- first\n- second\n\n> quoted\n\nconst answer = 42;',
@@ -357,6 +382,47 @@ check(
   renderedPatch.includes('• Edited src/example.ts (+1 -0)') && renderedPatch.includes('11 +new'),
   'apply_patch renders the Codex edit summary and numbered diff gutter',
 );
+const previousDiffChalkLevel = chalk.level;
+chalk.level = 3;
+try {
+  const syntaxDiff = serializeBlock(
+    renderHistoryEntry(
+      {
+        type: 'tool',
+        toolCallId: 'patch-syntax',
+        toolName: 'apply_patch',
+        input: {},
+        output: 'done',
+        status: 'completed',
+        fileChanges: [{
+          path: 'src/syntax.ts',
+          diff: [
+            '--- a/src/syntax.ts',
+            '+++ b/src/syntax.ts',
+            '@@ -1,3 +1,3 @@',
+            '-export const oldValue = 1;',
+            '-',
+            '+export const newValue = 2;',
+            '+',
+            ' console.log(newValue);',
+          ].join('\n'),
+          stats: { added: 1, modified: 1, removed: 0 },
+          changeKind: 'modified',
+          hasChanges: true,
+        }],
+      },
+      renderContext,
+    ),
+  ).join('\n');
+  check(
+    syntaxDiff.includes('\u001b[38;2;203;166;247m') &&
+      syntaxDiff.includes('\u001b[48;2;33;58;43m') &&
+      syntaxDiff.includes('\u001b[48;2;74;34;29m'),
+    'diff rows use the shared Codex syntax palette over Codex add/delete backgrounds',
+  );
+} finally {
+  chalk.level = previousDiffChalkLevel;
+}
 const renderedMultiFilePatch = serializeBlock(
   renderHistoryEntry(
     {

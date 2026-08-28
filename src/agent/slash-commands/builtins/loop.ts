@@ -136,6 +136,11 @@ export const loopSlashCommand: SlashCommand = {
     }
 
     const parsed = parseLoopInput(input);
+    if (parsed.intervalMs === null && parsed.prompt.startsWith('/')) {
+      throw new Error(
+        'self-paced loops require an agent prompt; add an interval to repeat a slash command (for example, /loop 5m /status)',
+      );
+    }
     const result = context.startLoop(parsed.prompt, parsed.intervalMs);
     context.persistEntries([
       loopSummary(
