@@ -182,8 +182,6 @@ function renderMetaEntry(text: string, ctx: RenderContext): Block {
   const style =
     text.startsWith('■ Conversation interrupted')
       ? chalk.redBright
-      : text === '(steered)'
-      ? (value: string) => chalk.italic(ctx.theme.dimmed(value))
       : ctx.theme.dimmed;
   return indent(wrapTextBlock(text, Math.max(1, ctx.width - 2), style), LEFT_MARGIN);
 }

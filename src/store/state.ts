@@ -7,6 +7,7 @@ export const createInitialState = (): AgentState => ({
   pasteRanges: [],
   historyEntries: [],
   queuedSubmissions: [],
+  pendingSteers: [],
   cursor: 0,
   busy: false,
   busyStatusText: null,

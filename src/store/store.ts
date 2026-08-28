@@ -289,6 +289,23 @@ function buildAgentStore(initialState: AgentState) {
       return state.queuedSubmissions.shift();
     },
 
+    popQueuedSubmission() {
+      return state.queuedSubmissions.pop();
+    },
+
+    takeQueuedSubmissions() {
+      return state.queuedSubmissions.splice(0);
+    },
+
+    enqueuePendingSteer(submission: QueuedSubmission) {
+      state.pendingSteers.push(submission);
+      return state;
+    },
+
+    takePendingSteers(count = state.pendingSteers.length) {
+      return state.pendingSteers.splice(0, Math.max(0, count));
+    },
+
     upsertToolEntry(entry: Extract<HistoryEntry, { type: 'tool' }>) {
       const index = state.historyEntries.findIndex(
         candidate => candidate.type === 'tool' && candidate.toolCallId === entry.toolCallId,
@@ -361,6 +378,19 @@ function buildAgentStore(initialState: AgentState) {
       state.inputChars.splice(0, state.inputChars.length, ...Array.from(text));
       state.pasteRanges.length = 0;
       state.cursor = clamp(cursor, 0, state.inputChars.length);
+      return state;
+    },
+
+    prependInput(text: string) {
+      const chars = Array.from(text);
+      if (chars.length === 0) return state;
+
+      state.inputChars.unshift(...chars);
+      for (const range of state.pasteRanges) {
+        range.start += chars.length;
+        range.end += chars.length;
+      }
+      state.cursor += chars.length;
       return state;
     },
 

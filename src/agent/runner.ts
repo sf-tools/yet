@@ -42,6 +42,7 @@ export type RunAgentLoopOptions = {
   maxSteps?: number;
   signal?: AbortSignal;
   onEvent?: (event: AgentLoopEvent) => void | Promise<void>;
+  takeSteers?: (signal?: AbortSignal) => Promise<AgentMessage[]>;
 };
 
 export type AgentLoopResult = {
@@ -60,10 +61,26 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
   const maxSteps = Math.max(1, Math.min(options.maxSteps ?? 20, 20));
   let previousResponseId: string | undefined;
   let pendingOutputs: ProviderToolOutput[] | undefined;
+  let continuationMessages: AgentChatMessage[] | undefined;
   let accumulatedText = '';
   let accumulatedReasoning = '';
   let accumulatedUsage = EMPTY_USAGE;
   const generatedMessages: AgentMessage[] = [];
+  const runtimeMessages = [...options.messages];
+
+  const takeSteers = async () => {
+    options.signal?.throwIfAborted();
+    const messages = (await options.takeSteers?.(options.signal)) ?? [];
+    options.signal?.throwIfAborted();
+    if (messages.length === 0) return [];
+
+    generatedMessages.push(...messages);
+    runtimeMessages.push(...messages);
+    return messages.filter(
+      (message): message is AgentChatMessage =>
+        'content' in message && message.role !== 'system',
+    );
+  };
 
   for (let stepIndex = 0; stepIndex < maxSteps; stepIndex += 1) {
     options.signal?.throwIfAborted();
@@ -71,13 +88,15 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
       model: options.model,
       thinkingMode: options.thinkingMode,
       fastModeEnabled: options.fastModeEnabled,
-      messages: options.messages,
+      messages: runtimeMessages,
       tools: options.tools.list(),
       previousResponseId,
       toolOutputs: pendingOutputs,
+      continuationMessages,
       signal: options.signal,
       onEvent: event => options.onEvent?.(event),
     });
+    options.signal?.throwIfAborted();
 
     previousResponseId = step.responseId;
     accumulatedText += step.text;
@@ -94,6 +113,12 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
     });
 
     if (step.toolCalls.length === 0) {
+      continuationMessages = await takeSteers();
+      if (continuationMessages.length > 0) {
+        pendingOutputs = undefined;
+        continue;
+      }
+
       return {
         responseId: step.responseId,
         text: accumulatedText,
@@ -104,6 +129,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
     }
 
     pendingOutputs = [];
+    continuationMessages = undefined;
     for (const call of step.toolCalls) {
       const callMessage: AgentToolCallMessage = {
         role: 'tool-call',
@@ -145,6 +171,8 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
         await options.onEvent?.({ type: 'tool-error', call, error, message: resultMessage });
       }
     }
+
+    continuationMessages = await takeSteers();
   }
 
   throw new Error(`agent loop exceeded its ${maxSteps}-step limit`);

@@ -17,7 +17,7 @@ import { renderHistoryEntry } from '@/render/components/entry';
 import { compactMessages, canCompactMessages } from './compact';
 import { renderSuggestions } from '@/render/components/suggestions';
 import { renderChoicePrompt, renderOutputPreview } from '@/render/components/transcript';
-import { renderQueuedSubmissions } from '@/render/components/queued';
+import { renderPendingInput } from '@/render/components/pending-input';
 import { IMAGE_MEDIA_TYPES, parseDroppedImagePaths } from './path-detect';
 import { copyTextToClipboard } from './clipboard-text';
 import { createFileChange, readOptionalFile } from '@/file-changes';
@@ -305,7 +305,11 @@ export class AgentApp {
       ctx,
       this.state.pendingApproval,
     );
-    const queued = renderQueuedSubmissions(this.state.queuedSubmissions, ctx, 8);
+    const pendingInput = renderPendingInput(
+      this.state.pendingSteers,
+      this.state.queuedSubmissions,
+      ctx,
+    );
     const composer = renderComposer(
       {
         inputChars: this.state.inputChars,
@@ -326,9 +330,17 @@ export class AgentApp {
     const footer = choicePrompt || suggestionLines.length > 0 ? [] : renderFooter(this.state, ctx);
     const statusIndicator = renderStatusIndicator(this.state, this.busyStartedAt === null ? 0 : Date.now() - this.busyStartedAt);
 
-    const topSections = [pendingHistory, preview, queued].filter(section => section.length > 0);
+    const topSections = [pendingHistory, preview].filter(section => section.length > 0);
     const body = topSections.flatMap((section, index) => (index === 0 ? section : [blankLine(), ...section]));
-    const composerLead = statusIndicator.length > 0 ? [...statusIndicator, blankLine()] : [blankLine()];
+    const bottomSections = [statusIndicator, pendingInput].filter(section => section.length > 0);
+    const composerLead = bottomSections.length > 0
+      ? [
+          ...bottomSections.flatMap((section, index) =>
+            index === 0 ? section : [blankLine(), ...section],
+          ),
+          blankLine(),
+        ]
+      : [blankLine()];
     const composerSurface = choicePrompt ?? composer;
     const blocks = body.length > 0
       ? [body, composerLead, composerSurface, suggestionLines, footer]
@@ -1004,6 +1016,79 @@ export class AgentApp {
     this.persistHistoryEntries(entries);
   }
 
+  private persistCurrentLiveOutcome() {
+    const entries: HistoryEntry[] = [
+      ...(this.state.liveReasoningText.trim()
+        ? [
+            {
+              type: 'entry',
+              kind: EntryKind.Reasoning,
+              text: this.state.liveReasoningText,
+            } as const,
+          ]
+        : []),
+      ...(this.state.liveAssistantText.trim()
+        ? [
+            {
+              type: 'entry',
+              kind: EntryKind.Assistant,
+              text: this.state.liveAssistantText,
+            } as const,
+          ]
+        : []),
+    ];
+
+    if (entries.length > 0) this.persistLiveOutcome(entries);
+  }
+
+  private async consumePendingSteers(signal?: AbortSignal): Promise<AgentMessage[]> {
+    const pendingSteers = this.state.pendingSteers.slice();
+    if (pendingSteers.length === 0) return [];
+
+    const prepared = await Promise.all(
+      pendingSteers.map(async submission => {
+        const trimmed = submission.text.trim();
+        const userContent = await this.buildUserMessageContent(trimmed);
+        const skillInstructions = await loadSkillInstructionMessages(
+          selectedSkills(trimmed, this.skills),
+        );
+        return {
+          trimmed,
+          skillInstructions,
+          messages: [
+            ...skillInstructions.messages,
+            { role: 'user' as const, content: userContent },
+          ],
+        };
+      }),
+    );
+
+    for (const steer of prepared) {
+      await this.promptHistory.add(steer.trimmed, process.cwd());
+    }
+
+    signal?.throwIfAborted();
+    this.store.takePendingSteers(pendingSteers.length);
+    this.persistCurrentLiveOutcome();
+    const messages: AgentMessage[] = [];
+
+    for (const steer of prepared) {
+      for (const warning of steer.skillInstructions.warnings) {
+        this.persistEntry(EntryKind.Error, warning);
+      }
+
+      messages.push(...steer.messages);
+      this.persistEntry(EntryKind.User, replaceTokensWithSummary(steer.trimmed));
+      this.recordSessionEvent({
+        type: 'user_message',
+        payload: { messages: steer.messages },
+      });
+    }
+
+    this.render();
+    return messages;
+  }
+
   private async expand(input: string) {
     let out = input;
     const imageMentions: Attachment[] = [];
@@ -1200,6 +1285,8 @@ export class AgentApp {
     const abortController = createAbortController(this.store);
     let assistantStream: BlockStreamPump | null = null;
     let reasoningStream: BlockStreamPump | null = null;
+    let interrupted = false;
+    let immediateSteer: QueuedSubmission | null = null;
 
     this.setBusy(true);
     this.store.clearLiveAssistantText();
@@ -1259,6 +1346,7 @@ export class AgentApp {
         tools: this.getActiveTools(),
         maxSteps: 20,
         signal: abortController.signal,
+        takeSteers: signal => this.consumePendingSteers(signal),
         onEvent: async event => {
           if (abortController.signal.aborted || this.state.abortRequested) return;
 
@@ -1383,6 +1471,19 @@ export class AgentApp {
       reasoningStream?.flush();
       assistantStream?.flush();
       if (abortController.signal.aborted) {
+        interrupted = true;
+        const shouldSubmitSteersImmediately = this.state.steerRequested;
+        const pendingSteers = shouldSubmitSteersImmediately
+          ? this.store.takePendingSteers()
+          : [];
+        if (pendingSteers.length > 0) {
+          immediateSteer = {
+            text: pendingSteers.map(submission => submission.text).join('\n'),
+          };
+        } else if (!shouldSubmitSteersImmediately) {
+          this.restorePendingInputsToComposer();
+        }
+
         this.persistLiveOutcome([
           ...(this.state.liveReasoningText.trim()
             ? [
@@ -1405,10 +1506,16 @@ export class AgentApp {
           {
             type: 'entry',
             kind: EntryKind.Meta,
-            text: this.state.steerRequested ? '(steered)' : '■ Conversation interrupted - tell the model what to do differently',
+            text: immediateSteer
+              ? 'Model interrupted to submit steer instructions.'
+              : '■ Conversation interrupted - tell the model what to do differently',
           },
         ]);
       } else {
+        if (this.state.pendingSteers.length > 0) {
+          interrupted = true;
+          this.restorePendingInputsToComposer();
+        }
         this.persistLiveOutcome([
           ...(this.state.liveReasoningText.trim()
             ? [
@@ -1452,8 +1559,14 @@ export class AgentApp {
       }
 
       this.render();
-      void this.drainQueuedSubmissions();
     }
+
+    if (immediateSteer && !this.state.closed) {
+      await this.processSubmission(immediateSteer);
+      return;
+    }
+
+    if (!interrupted) void this.drainQueuedSubmissions();
   }
 
   private clearHistoryNavigation() {
@@ -1508,31 +1621,44 @@ export class AgentApp {
     return true;
   }
 
-  private requestSteer() {
-    const controller = this.state.abortController;
-    if (!this.state.busy || !controller || this.state.queuedSubmissions.length === 0 || this.state.steerRequested) return false;
+  private restorePendingInputsToComposer() {
+    const pending = this.store.takePendingSteers();
+    const queued = this.store.takeQueuedSubmissions();
+    const restored = [...pending, ...queued]
+      .map(submission => submission.text)
+      .filter(text => text.length > 0)
+      .join('\n');
 
-    this.store.setSteerRequested(true);
-    this.store.setAbortRequested(true);
-    controller.abort();
-    this.render();
-    return true;
+    if (!restored) return;
+    this.store.prependInput(`${restored}${this.state.inputChars.length > 0 ? '\n' : ''}`);
+  }
+
+  private interruptActiveTurn(submitPendingSteersImmediately: boolean) {
+    if (!this.state.busy || !this.state.abortController) return false;
+    this.store.setSteerRequested(
+      submitPendingSteersImmediately && this.state.pendingSteers.length > 0,
+    );
+    return handleAbortKeypress(this.store);
   }
 
   private async submit() {
     const raw = this.state.inputChars.join('');
     const trimmed = raw.trim();
 
-    if (!trimmed) {
-      if (this.requestSteer()) return;
-      return;
-    }
+    if (!trimmed) return;
 
     this.clearHistoryNavigation();
     this.resetPreferredComposerColumn();
     this.store.resetComposer();
     this.store.resetSelectedSuggestion();
     this.render();
+
+    const slashCommand = this.slashCommands.parse(trimmed);
+    if (this.state.busy && this.state.abortController && !slashCommand) {
+      this.store.enqueuePendingSteer({ text: raw });
+      this.render();
+      return;
+    }
 
     if (this.state.busy || this.state.queuedSubmissions.length > 0 || this.drainingQueuedSubmissions) {
       this.store.enqueueSubmission({ text: raw });
@@ -1542,6 +1668,33 @@ export class AgentApp {
     }
 
     await this.processSubmission(raw);
+  }
+
+  private queueComposerDraft() {
+    if (!this.state.busy) return false;
+    const raw = this.state.inputChars.join('');
+    if (!raw.trim()) return false;
+
+    this.clearHistoryNavigation();
+    this.resetPreferredComposerColumn();
+    this.store.resetComposer();
+    this.store.resetSelectedSuggestion();
+    this.store.enqueueSubmission({ text: raw });
+    this.render();
+    return true;
+  }
+
+  private editLatestQueuedSubmission() {
+    if (this.getSuggestions().length > 0) return false;
+    const submission = this.store.popQueuedSubmission();
+    if (!submission) return false;
+
+    this.clearHistoryNavigation();
+    this.resetPreferredComposerColumn();
+    this.store.replaceInput(submission.text);
+    this.store.resetSelectedSuggestion();
+    this.render();
+    return true;
   }
 
   private insertText(text: string) {
@@ -1731,7 +1884,7 @@ export class AgentApp {
   }
 
   private handleEscape() {
-    if (handleAbortKeypress(this.store)) {
+    if (this.interruptActiveTurn(true)) {
       this.render();
       return;
     }
@@ -1752,7 +1905,7 @@ export class AgentApp {
     if (!binding) return;
 
     if (binding.type === 'interrupt') {
-      if (handleAbortKeypress(this.store)) {
+      if (this.interruptActiveTurn(false)) {
         this.render();
         return;
       }
@@ -1789,7 +1942,22 @@ export class AgentApp {
     }
 
     if (binding.type === 'acceptSuggestion') {
+      if (this.getSuggestions().length === 0 && this.queueComposerDraft()) return;
       this.tryAcceptSuggestion();
+      return;
+    }
+
+    if (binding.type === 'editQueuedSubmission') {
+      if (this.editLatestQueuedSubmission()) return;
+      if (binding.fallback === 'up') {
+        if (this.moveSuggestionSelection(-1)) return;
+        if (this.moveComposerCursorVertical(-1)) return;
+        await this.moveInputHistory(-1);
+      } else {
+        this.resetPreferredComposerColumn();
+        this.store.setCursor(this.state.cursor - 1);
+        this.render();
+      }
       return;
     }
 

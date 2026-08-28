@@ -6,6 +6,7 @@ export type InputBinding =
   | { type: 'toggleThinkingMode' }
   | { type: 'togglePreviews' }
   | { type: 'acceptSuggestion' }
+  | { type: 'editQueuedSubmission'; fallback: 'up' | 'left' }
   | { type: 'submit' }
   | { type: 'moveSuggestion'; delta: number }
   | { type: 'backspace' }
@@ -53,6 +54,10 @@ export function resolveInputBinding(data: Buffer | string): InputBinding | null 
   if (keypress.name === 'tab' && keypress.shift) return { type: 'toggleThinkingMode' };
   if (keypress.name === 'tab') return { type: 'acceptSuggestion' };
   if (keypress.name === 'return') return { type: 'submit' };
+  if (keypress.name === 'up' && keypress.meta)
+    return { type: 'editQueuedSubmission', fallback: 'up' };
+  if (keypress.name === 'left' && keypress.shift)
+    return { type: 'editQueuedSubmission', fallback: 'left' };
   if (keypress.name === 'up') return { type: 'moveSuggestion', delta: -1 };
   if (keypress.name === 'down') return { type: 'moveSuggestion', delta: 1 };
   if (keypress.name === 'backspace') return { type: 'backspace' };

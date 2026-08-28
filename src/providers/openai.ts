@@ -47,6 +47,7 @@ type StreamStepOptions = {
   tools: Tool[];
   previousResponseId?: string;
   toolOutputs?: ProviderToolOutput[];
+  continuationMessages?: AgentChatMessage[];
   signal?: AbortSignal;
   text?: ResponseTextConfig;
   store?: boolean;
@@ -159,7 +160,12 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
     call_id: output.callId,
     output: output.output,
   }));
-  const input: ResponseInputItem[] = options.previousResponseId ? toolOutputItems : messageItems;
+  const continuationItems: ResponseInputItem[] = (options.continuationMessages ?? []).map(
+    messageInput,
+  );
+  const input: ResponseInputItem[] = options.previousResponseId
+    ? [...toolOutputItems, ...continuationItems]
+    : messageItems;
   const stream = await getClient().responses.create(
     {
       model: getOpenAIProviderModelId(options.model),

@@ -1,5 +1,4 @@
 import chalk from 'chalk';
-import approx from 'approximate-number';
 
 import {
   formatThinkingMode,
@@ -88,33 +87,12 @@ function thinkingModeStyle(mode: AgentState['thinkingMode']) {
   }
 }
 
-function formatUsageSummary(state: AgentState) {
-  const promptTokens = state.busy ? state.livePromptTokens : state.lastPromptTokens;
-  const outputTokens = state.busy ? state.liveOutputTokens : state.lastOutputTokens;
-  const reasoningTokens = state.busy ? state.liveReasoningTokens : state.lastReasoningTokens;
-
-  const hasUsage = promptTokens > 0 || outputTokens > 0 || reasoningTokens > 0;
-  if (!hasUsage) return null;
-
+function formatContextLeft(state: AgentState) {
   const contextWindow = getContextWindow(state.currentModel);
-  const input = approx(promptTokens, { capital: false, precision: 2 });
-  const output = approx(outputTokens, { capital: false, precision: 2 });
-  const context = approx(contextWindow, { capital: false, precision: 2 });
-  const pct = contextWindow > 0 ? (promptTokens / contextWindow) * 100 : 0;
-  const pctLabel = contextWindow > 0 ? (pct < 1 ? '<1%' : `${Math.round(pct)}%`) : 'n/a';
-
-  return {
-    text: `↑${input} ↓${output} / ${context} (${pctLabel})`,
-    pct,
-  };
-}
-
-function contextUsageStyle(pct: number | null | undefined, ctx: RenderContext) {
-  if (pct == null || !Number.isFinite(pct)) return ctx.theme.dimmed;
-  if (pct >= 97) return chalk.redBright;
-  if (pct >= 92) return chalk.hex('#ff9f1a');
-  if (pct >= 85) return chalk.yellowBright;
-  return ctx.theme.dimmed;
+  if (contextWindow <= 0) return null;
+  const usedTokens = state.busy ? state.livePromptTokens : state.lastPromptTokens;
+  const remaining = Math.max(0, Math.min(100, 100 - (usedTokens / contextWindow) * 100));
+  return `${Math.round(remaining)}% context left`;
 }
 
 function joinFooterParts(...parts: Array<string | null | undefined>) {
@@ -125,7 +103,6 @@ function buildStatsLine(
   state: AgentState,
   ctx: RenderContext,
   footerPrefix: Segment[],
-  usage: { text: string; pct: number } | null,
   cost: string,
   autoCompact: string,
 ) {
@@ -147,7 +124,6 @@ function buildStatsLine(
     statsSegments.push(span(text, style));
   };
 
-  appendStat(usage?.text ?? '', contextUsageStyle(usage?.pct, ctx));
   appendStat(cost);
   appendStat(autoCompact);
 
@@ -156,49 +132,43 @@ function buildStatsLine(
 
 function buildModeLine(
   state: AgentState,
-  ctx: RenderContext,
   footerPrefix: Segment[],
-  queued: string,
   statsLine: StyledLine,
 ) {
   if (state.pendingApproval) {
     return line(
       ...footerPrefix,
-      span(joinFooterParts('Approval required', state.pendingApproval.title, queued), chalk.yellow),
+      span(joinFooterParts('Approval required', state.pendingApproval.title), chalk.yellow),
     );
   }
 
   if (state.pendingChoice) {
     return line(
       ...footerPrefix,
-      span(joinFooterParts('Choice required', state.pendingChoice.title, queued), chalk.yellow),
+      span(joinFooterParts('Choice required', state.pendingChoice.title), chalk.yellow),
     );
   }
 
   if (state.compacting) {
     return line(
       ...footerPrefix,
-      span(joinFooterParts('Compacting...', queued), chalk.yellow),
+      span('Compacting...', chalk.yellow),
     );
   }
 
   if (state.busy && state.busyStatusText) {
     return line(
       ...footerPrefix,
-      span(joinFooterParts(`running ${state.busyStatusText}`, queued), chalk.yellow),
+      span(`running ${state.busyStatusText}`, chalk.yellow),
     );
   }
 
   return statsLine;
 }
 
-function buildNoticeLine(state: AgentState, ctx: RenderContext, queued: string) {
-  if (state.steerRequested) {
-    return line(span(LEFT_MARGIN), span(joinFooterParts('Steering…', queued), chalk.yellow));
-  }
-
+function buildNoticeLine(state: AgentState, ctx: RenderContext) {
   if (state.abortRequested) {
-    return line(span(LEFT_MARGIN), span(joinFooterParts('Aborting…', queued), chalk.redBright));
+    return line(span(LEFT_MARGIN), span('Aborting…', chalk.redBright));
   }
 
   if (state.footerNotice) {
@@ -209,9 +179,17 @@ function buildNoticeLine(state: AgentState, ctx: RenderContext, queued: string) 
 }
 
 export function renderFooter(state: AgentState, ctx: RenderContext): Block {
-  const queued =
-    state.queuedSubmissions.length > 0 ? `${state.queuedSubmissions.length} queued` : '';
-  const usage = formatUsageSummary(state);
+  if (state.busy && state.inputChars.length > 0) {
+    const contextLeft = formatContextLeft(state);
+    return [
+      justifyLine(
+        [span(LEFT_MARGIN), span('tab to queue message', ctx.theme.dimmed)],
+        contextLeft ? [span(contextLeft, ctx.theme.dimmed)] : [],
+        Math.max(1, ctx.width),
+      ),
+    ];
+  }
+
   const cost = state.totalCost > 0 ? `$${state.totalCost.toFixed(4)}` : '';
   const autoCompact = state.autoCompactEnabled ? '' : 'auto-compact off';
   const footerPrefix = [
@@ -222,8 +200,8 @@ export function renderFooter(state: AgentState, ctx: RenderContext): Block {
         ? [span('auto approvals', chalk.yellow), span(' · ', ctx.theme.subtle)]
         : []),
   ];
-  const statsLine = buildStatsLine(state, ctx, footerPrefix, usage, cost, autoCompact);
-  const modeLine = buildModeLine(state, ctx, footerPrefix, queued, statsLine);
+  const statsLine = buildStatsLine(state, ctx, footerPrefix, cost, autoCompact);
+  const modeLine = buildModeLine(state, footerPrefix, statsLine);
 
   const locationSegments = [
     span(LEFT_MARGIN),
@@ -247,7 +225,7 @@ export function renderFooter(state: AgentState, ctx: RenderContext): Block {
     combinedWidth <= width
       ? [justifyLine(combinedSegments, rightSegments, width)]
       : [justifyLine(locationSegments, rightSegments, width), modeLine];
-  const notice = buildNoticeLine(state, ctx, queued);
+  const notice = buildNoticeLine(state, ctx);
 
   return [...statusLines, ...(notice ? [line(), notice] : [])];
 }

@@ -19,6 +19,7 @@ export type AgentState = {
   pasteRanges: ComposerPasteRange[];
   historyEntries: HistoryEntry[];
   queuedSubmissions: QueuedSubmission[];
+  pendingSteers: QueuedSubmission[];
   cursor: number;
   busy: boolean;
   busyStatusText: string | null;
