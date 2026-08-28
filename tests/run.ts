@@ -1,5 +1,5 @@
 import { AgentApp } from '@/agent/app';
-import type { HistoryEntry } from '@/types';
+import type { ChoiceRequest, HistoryEntry } from '@/types';
 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -198,7 +198,7 @@ try {
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'fast', 'permissions', 'plan', 'compact', 'copy', 'resume', 'rename', 'exit'],
+  ['status', 'model', 'effort', 'fast', 'permissions', 'plan', 'compact', 'copy', 'resume', 'rename', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
@@ -215,6 +215,20 @@ await fastCommand.execute(
   { raw: '/fast', invocation: 'fast', argsText: '', argv: [] },
 );
 check(fastStore.getState().fastModeEnabled, '/fast enables priority processing');
+
+let deletedCurrentSession = false;
+const deleteCommand = builtinSlashCommands.find(command => command.name === 'delete');
+check(deleteCommand !== undefined, '/delete is registered');
+await deleteCommand.execute(
+  {
+    requestChoice: async (request: ChoiceRequest) => ({ ...request.options[1]!, index: 1 }),
+    deleteCurrentSession: async () => {
+      deletedCurrentSession = true;
+    },
+  } as unknown as SlashCommandContext,
+  { raw: '/delete', invocation: 'delete', argsText: '', argv: [] },
+);
+check(deletedCurrentSession, '/delete confirms before deleting the current session');
 
 const statusEntries: HistoryEntry[] = [];
 const statusCommand = builtinSlashCommands.find(command => command.name === 'status');
@@ -519,6 +533,24 @@ try {
   const emptyRolloutPath = emptyRecorder.rolloutPath;
   await emptyRecorder.close();
   check(!existsSync(emptyRolloutPath), 'empty sessions do not materialize rollout files');
+
+  const deletedRecorder = await SessionRecorder.open({
+    sessionId: 'deleted-session',
+    cwd: sessionHome,
+    yetHome: sessionHome,
+  });
+  deletedRecorder.record({
+    type: 'transcript_entry',
+    payload: { entries: [{ type: 'plain', text: 'delete me' }] },
+  });
+  await deletedRecorder.deleteSession();
+  check(!existsSync(deletedRecorder.rolloutPath), 'session deletion removes the canonical rollout');
+  check(
+    !(await listYetSessions({ yetHome: sessionHome })).some(
+      entry => entry.sessionId === 'deleted-session',
+    ),
+    'session deletion removes the session from the resume index',
+  );
 
   const recorder = await SessionRecorder.open({
     sessionId: 'event-session',

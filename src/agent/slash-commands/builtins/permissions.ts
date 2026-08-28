@@ -19,14 +19,14 @@ export const permissionsSlashCommand: SlashCommand = {
     let mode = args.argv[0]?.toLowerCase();
 
     if (!mode) {
-      mode = (
-        await requestChoice({
-          title: 'Update Model Permissions',
-          detail: 'Choose how Yet handles tool actions.',
-          options: PERMISSION_OPTIONS.map(option => ({ ...option })),
-          recommendedValue: store.getState().permissionMode,
-        })
-      ).value;
+      const selection = await requestChoice({
+        title: 'Update Model Permissions',
+        detail: 'Choose how Yet handles tool actions.',
+        options: PERMISSION_OPTIONS.map(option => ({ ...option })),
+        recommendedValue: store.getState().permissionMode,
+      });
+      if (!selection) return;
+      mode = selection.value;
     }
 
     if (!isPermissionMode(mode)) throw new Error(`invalid permission mode: ${mode}`);

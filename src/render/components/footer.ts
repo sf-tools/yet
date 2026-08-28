@@ -193,10 +193,6 @@ function buildModeLine(
 }
 
 function buildNoticeLine(state: AgentState, ctx: RenderContext, queued: string) {
-  if (state.exitConfirmationPending) {
-    return line(span(LEFT_MARGIN), span('Press Ctrl+C again to exit', chalk.redBright));
-  }
-
   if (state.steerRequested) {
     return line(span(LEFT_MARGIN), span(joinFooterParts('Steering…', queued), chalk.yellow));
   }

@@ -39,7 +39,6 @@ export type AgentState = {
   abortController: AbortController | null;
   abortRequested: boolean;
   steerRequested: boolean;
-  exitConfirmationPending: boolean;
   pendingApproval: ApprovalRequest | null;
   pendingChoice: ChoiceRequest | null;
   pendingChoiceIndex: number;

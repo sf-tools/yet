@@ -1,7 +1,8 @@
 import chalk from 'chalk';
 
+import { widthOf } from '@/text';
 import { EntryKind, type ApprovalRequest, type ChoiceRequest } from '@/types';
-import { LEFT_MARGIN, thinPanelize, wrapTextBlock, takeLast } from '../layout';
+import { LEFT_MARGIN, panelize, thinPanelize, wrapTextBlock, takeLast } from '../layout';
 import { blankLine, line, span } from '../primitives';
 import { renderHistoryEntry } from './entry';
 import { renderFileChanges } from './tools/shared';
@@ -42,55 +43,51 @@ function renderApprovalNotice(request: ApprovalRequest, ctx: RenderContext): Blo
   );
 }
 
-function renderChoiceNotice(
+export function renderChoicePrompt(
   request: ChoiceRequest,
   selectedIndex: number,
   ctx: RenderContext,
 ): Block {
   const width = Math.max(1, ctx.width - 4);
   const detail = wrapTextBlock(request.detail, width, ctx.theme.dimmed);
+  const labelWidth = request.options.reduce(
+    (max, option) => Math.max(max, widthOf(option.label)),
+    0,
+  );
   const options = request.options.flatMap((option, index) => {
     const selected = index === selectedIndex;
-    const recommended = option.value === request.recommendedValue;
-    const labelStyle = selected ? ctx.theme.foreground : ctx.theme.dimmed;
-    const detailStyle = selected ? ctx.theme.dimmed : ctx.theme.subtle;
-    const body = option.detail
-      ? wrapTextBlock(option.detail, Math.max(1, width - 6), detailStyle)
-      : [];
+    const selectedStyle = selected ? chalk.cyanBright : ctx.theme.foreground;
+    const detailStyle = selected ? chalk.cyanBright : ctx.theme.dimmed;
+    const prefix = `${index + 1}. `;
+    const label = `${option.label}${' '.repeat(Math.max(0, labelWidth - widthOf(option.label)))}`;
 
     return [
       line(
-        span(selected ? '> ' : '  ', ctx.theme.foreground),
-        span(`${index + 1}. `, ctx.theme.subtle),
-        span(option.label, labelStyle),
-        ...(recommended
-          ? [span(' · ', ctx.theme.subtle), span('recommended', ctx.theme.dimmed)]
-          : []),
+        span(selected ? '› ' : '  ', selected ? chalk.cyanBright : ctx.theme.foreground),
+        span(prefix, selectedStyle),
+        span(label, selectedStyle),
+        ...(option.detail ? [span('  '), span(option.detail, detailStyle)] : []),
       ),
-      ...body.map(optionLine => line(span('     '), ...optionLine.segments)),
     ];
   });
 
-  return thinPanelize(
-    [
-      line(span('choice', ctx.theme.subtle)),
-      line(span(request.title, ctx.theme.foreground)),
-      ...detail,
-      blankLine(),
-      ...options,
-      blankLine(),
-      line(
-        span('↑/↓ move', ctx.theme.dimmed),
-        span(' · ', ctx.theme.subtle),
-        span('enter choose', ctx.theme.dimmed),
-        span(' · ', ctx.theme.subtle),
-        span('1-9 quick pick', ctx.theme.dimmed),
-        span(' · ', ctx.theme.subtle),
-        span('esc cancel', ctx.theme.dimmed),
-      ),
-    ],
-    { bg: ctx.theme.panelBg(), width: ctx.width },
-  );
+  return [
+    ...panelize(
+      [
+        blankLine(),
+        line(span(request.title, chalk.bold)),
+        ...detail,
+        blankLine(),
+        ...options,
+        blankLine(),
+      ],
+      { bg: ctx.theme.composerBg(), width: ctx.width },
+    ),
+    line(
+      span(`${LEFT_MARGIN} `),
+      span('Press enter to confirm or esc to go back', ctx.theme.dimmed),
+    ),
+  ];
 }
 
 export function renderOutputPreview(
@@ -98,10 +95,8 @@ export function renderOutputPreview(
   text: string,
   ctx: RenderContext,
   pendingApproval: ApprovalRequest | null = null,
-  pendingChoice: ChoiceRequest | null = null,
-  pendingChoiceIndex = 0,
 ): Block {
-  if (!reasoningText && !text && !pendingApproval && !pendingChoice) return [];
+  if (!reasoningText && !text && !pendingApproval) return [];
 
   const maxLines = Math.max(3, ctx.height - 12);
   const previewBlocks: Block[] = [];
@@ -125,9 +120,7 @@ export function renderOutputPreview(
   );
   const notice = pendingApproval
     ? [...renderApprovalNotice(pendingApproval, ctx), blankLine()]
-    : pendingChoice
-      ? [...renderChoiceNotice(pendingChoice, pendingChoiceIndex, ctx), blankLine()]
-      : [];
+    : [];
 
   return [...takeLast(preview, maxLines), ...notice];
 }

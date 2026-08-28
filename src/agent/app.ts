@@ -16,7 +16,7 @@ import type { ReadStream as TtyReadStream } from 'node:tty';
 import { renderHistoryEntry } from '@/render/components/entry';
 import { compactMessages, canCompactMessages } from './compact';
 import { renderSuggestions } from '@/render/components/suggestions';
-import { renderOutputPreview } from '@/render/components/transcript';
+import { renderChoicePrompt, renderOutputPreview } from '@/render/components/transcript';
 import { renderQueuedSubmissions } from '@/render/components/queued';
 import { IMAGE_MEDIA_TYPES, parseDroppedImagePaths } from './path-detect';
 import { copyTextToClipboard } from './clipboard-text';
@@ -304,8 +304,6 @@ export class AgentApp {
       this.state.liveAssistantText,
       ctx,
       this.state.pendingApproval,
-      this.state.pendingChoice,
-      this.state.pendingChoiceIndex,
     );
     const queued = renderQueuedSubmissions(this.state.queuedSubmissions, ctx, 8);
     const composer = renderComposer(
@@ -319,14 +317,22 @@ export class AgentApp {
       },
       ctx,
     ).block;
-    const suggestionLines = renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
-    const footer = suggestionLines.length > 0 ? [] : renderFooter(this.state, ctx);
+    const choicePrompt = this.state.pendingChoice
+      ? renderChoicePrompt(this.state.pendingChoice, this.state.pendingChoiceIndex, ctx)
+      : null;
+    const suggestionLines = choicePrompt
+      ? []
+      : renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
+    const footer = choicePrompt || suggestionLines.length > 0 ? [] : renderFooter(this.state, ctx);
     const statusIndicator = renderStatusIndicator(this.state, this.busyStartedAt === null ? 0 : Date.now() - this.busyStartedAt);
 
     const topSections = [pendingHistory, preview, queued].filter(section => section.length > 0);
     const body = topSections.flatMap((section, index) => (index === 0 ? section : [blankLine(), ...section]));
     const composerLead = statusIndicator.length > 0 ? [...statusIndicator, blankLine()] : [blankLine()];
-    const blocks = body.length > 0 ? [body, composerLead, composer, suggestionLines, footer] : [composerLead, composer, suggestionLines, footer];
+    const composerSurface = choicePrompt ?? composer;
+    const blocks = body.length > 0
+      ? [body, composerLead, composerSurface, suggestionLines, footer]
+      : [composerLead, composerSurface, suggestionLines, footer];
 
     return serializeBlock(vstack(...blocks));
   }
@@ -414,8 +420,8 @@ export class AgentApp {
     for (const chunk of buffer) this.onStdinData(chunk);
   }
 
-  cleanup(code = 0) {
-    if (this.state.closed) return;
+  private prepareShutdown() {
+    if (this.state.closed) return false;
     this.store.setClosed();
 
     clearInterval(this.statusAnimationTimer);
@@ -430,15 +436,20 @@ export class AgentApp {
     this.clearTransientBlock();
     if (process.stdout.isTTY) process.stdout.write('\u001b[?25h\u001b[?2004l');
 
+    this.threadTitleRequest?.cancel();
+    this.threadTitleRequest = null;
+    return true;
+  }
+
+  cleanup(code = 0) {
+    if (!this.prepareShutdown()) return;
+
     if (code === 0) {
       const exitLines = serializeBlock(renderExitSummary(this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null));
 
       // The user sees the closing summary immediately. Only queued local writes remain afterward.
       if (exitLines.length > 0) process.stdout.write(`${exitLines.join('\n')}\n`);
     }
-
-    this.threadTitleRequest?.cancel();
-    this.threadTitleRequest = null;
 
     void (async () => {
       try {
@@ -448,6 +459,22 @@ export class AgentApp {
       }
       process.exit(code);
     })();
+  }
+
+  private async deleteCurrentSession() {
+    if (!this.prepareShutdown()) return;
+
+    let code = 0;
+    try {
+      if (!this.sessionRecorder) throw new Error('session recorder is not available');
+      await this.sessionRecorder.deleteSession();
+    } catch (error) {
+      code = 1;
+      process.stderr.write(
+        `error: could not delete this session: ${plain(error instanceof Error ? error.message : String(error))}\n`,
+      );
+    }
+    process.exit(code);
   }
 
   handleFatalError(error: unknown, code = 1) {
@@ -556,10 +583,6 @@ export class AgentApp {
 
   private hasResumableSession() {
     return this.state.historyEntries.length > 0;
-  }
-
-  private shouldConfirmExit() {
-    return this.hasResumableSession();
   }
 
   private hasRainbowPhraseVisible() {
@@ -865,7 +888,6 @@ export class AgentApp {
       this.render();
     });
 
-    if (!selection) throw new Error('choice cancelled by user');
     return selection;
   };
 
@@ -1118,6 +1140,7 @@ export class AgentApp {
           {
             store: this.store,
             cleanup: code => this.cleanup(code),
+            deleteCurrentSession: () => this.deleteCurrentSession(),
             compactConversation: options => this.compactConversation(options),
             setCurrentModel: model => this.setCurrentModel(model),
             setThinkingMode: thinkingMode => this.setThinkingMode(thinkingMode),
@@ -1708,12 +1731,6 @@ export class AgentApp {
   }
 
   private handleEscape() {
-    if (this.state.exitConfirmationPending) {
-      this.store.setExitConfirmationPending(false);
-      this.render();
-      return;
-    }
-
     if (handleAbortKeypress(this.store)) {
       this.render();
       return;
@@ -1735,23 +1752,16 @@ export class AgentApp {
     if (!binding) return;
 
     if (binding.type === 'interrupt') {
+      if (handleAbortKeypress(this.store)) {
+        this.render();
+        return;
+      }
+
       if (this.state.inputChars.length > 0) {
         this.clearHistoryNavigation();
         this.resetPreferredComposerColumn();
         this.store.resetComposer();
         this.store.resetSelectedSuggestion();
-        this.store.setExitConfirmationPending(false);
-        this.render();
-        return;
-      }
-
-      if (!this.shouldConfirmExit()) {
-        this.cleanup(0);
-        return;
-      }
-
-      if (!this.state.exitConfirmationPending) {
-        this.store.setExitConfirmationPending(true);
         this.render();
         return;
       }
@@ -1767,8 +1777,6 @@ export class AgentApp {
       this.handleEscape();
       return;
     }
-
-    if (this.state.exitConfirmationPending) this.store.setExitConfirmationPending(false);
 
     if (binding.type === 'toggleThinkingMode') {
       this.cycleThinkingMode();

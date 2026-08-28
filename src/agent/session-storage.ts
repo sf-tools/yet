@@ -5,6 +5,7 @@ import {
   open,
   readFile,
   readdir,
+  rename,
   unlink,
   writeFile,
   type FileHandle,
@@ -425,6 +426,27 @@ async function appendIndexEntry(entry: SessionIndexEntry, yetHome: string) {
     encoding: 'utf8',
     mode: 0o600,
   });
+}
+
+async function removeIndexEntry(sessionId: string, yetHome: string) {
+  let entries = new Map<string, SessionIndexEntry>();
+  try {
+    entries = parseIndex(await readFile(indexPath(yetHome), 'utf8'));
+  } catch {}
+  entries.delete(sessionId);
+
+  await mkdir(yetHome, { recursive: true });
+  const temporaryPath = join(yetHome, `.session-index-${process.pid}-${randomUUID()}.tmp`);
+  const contents = [...entries.values()].map(entry => JSON.stringify(entry)).join('\n');
+  try {
+    await writeFile(temporaryPath, contents ? `${contents}\n` : '', {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await rename(temporaryPath, indexPath(yetHome));
+  } finally {
+    await unlink(temporaryPath).catch(() => {});
+  }
 }
 
 async function findRolloutPaths(root: string): Promise<string[]> {
@@ -896,6 +918,28 @@ export class SessionRecorder {
       await this.resetHandle();
       await releaseSessionLock(this.lock);
     }
+  }
+
+  async deleteSession() {
+    await this.close();
+
+    const sessionsRoot = resolve(this.yetHome, SESSION_DIRECTORY);
+    const rolloutPath = resolve(this.rolloutPath);
+    const relativePath = relative(sessionsRoot, rolloutPath);
+    if (
+      relativePath.startsWith('..') ||
+      isAbsolute(relativePath) ||
+      !basename(rolloutPath).includes(this.sessionId)
+    ) {
+      throw new Error(`refusing to delete rollout outside Yet sessions: ${this.rolloutPath}`);
+    }
+
+    try {
+      await unlink(rolloutPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await removeIndexEntry(this.sessionId, this.yetHome);
   }
 }
 

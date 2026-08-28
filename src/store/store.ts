@@ -134,11 +134,6 @@ function buildAgentStore(initialState: AgentState) {
       return state;
     },
 
-    setExitConfirmationPending(exitConfirmationPending: boolean) {
-      state.exitConfirmationPending = exitConfirmationPending;
-      return state;
-    },
-
     setPendingApproval(pendingApproval: ApprovalRequest | null) {
       state.pendingApproval = pendingApproval;
       return state;

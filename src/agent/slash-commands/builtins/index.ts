@@ -1,5 +1,6 @@
 import { compactSlashCommand } from './compact';
 import { copySlashCommand } from './copy';
+import { deleteSlashCommand } from './delete';
 import { effortSlashCommand } from './effort';
 import { exitSlashCommand } from './exit';
 import { fastSlashCommand } from './fast';
@@ -21,5 +22,6 @@ export const builtinSlashCommands = [
   copySlashCommand,
   resumeSlashCommand,
   renameSlashCommand,
+  deleteSlashCommand,
   exitSlashCommand,
 ];

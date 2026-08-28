@@ -13,6 +13,7 @@ export type SlashCommandArgs = {
 export type SlashCommandContext = {
   store: AgentStore;
   cleanup(code?: number): void;
+  deleteCurrentSession(): Promise<void>;
   compactConversation(options?: { manual?: boolean; force?: boolean }): Promise<boolean>;
   setCurrentModel(model: string): void;
   setThinkingMode(thinkingMode: ThinkingMode): void;
@@ -21,7 +22,7 @@ export type SlashCommandContext = {
   setPlanningMode(enabled: boolean): void;
   enqueueSubmission(text: string, options?: { planningMode?: boolean }): void;
   openCommandArgumentPicker(commandName: string): void;
-  requestChoice(request: ChoiceRequest): Promise<ChoiceSelection>;
+  requestChoice(request: ChoiceRequest): Promise<ChoiceSelection | null>;
   showFooterNotice(text: string, durationMs?: number): void;
   getActiveToolSummaries(): Array<{ names: string[]; description: string | null }>;
   getSessionId(): string;
