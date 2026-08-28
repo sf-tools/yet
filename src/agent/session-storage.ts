@@ -24,7 +24,7 @@ import { createInitialState } from '@/store/state';
 import type { AgentState } from '@/store/types';
 import { EntryKind, type HistoryEntry, type ToolHistoryEntry } from '@/types';
 
-type PersistedSessionState = {
+export type PersistedSessionState = {
   messages: AgentState['messages'];
   historyEntries: AgentState['historyEntries'];
   inputChars: string[];
@@ -46,6 +46,8 @@ export type YetSessionListEntry = {
   title?: string;
   preview?: string;
   rolloutPath?: string;
+  parentSessionId?: string;
+  forkPoint?: number;
 };
 
 export type LoadedYetSession = {
@@ -56,6 +58,8 @@ export type LoadedYetSession = {
   updatedAt: string;
   name?: string;
   rolloutPath: string;
+  parentSessionId?: string;
+  forkPoint?: number;
   state: PersistedSessionState;
 };
 
@@ -74,8 +78,16 @@ type TurnContextPayload = {
 export type YetSessionEvent =
   | {
       type: 'session_meta';
-      payload: { version: 2; sessionId: string; cwd: string; createdAt: string };
+      payload: {
+        version: 2;
+        sessionId: string;
+        cwd: string;
+        createdAt: string;
+        parentSessionId?: string;
+        forkPoint?: number;
+      };
     }
+  | { type: 'fork_snapshot'; payload: { state: PersistedSessionState } }
   | {
       type: 'thread_name_updated';
       payload: { name: string; source: ThreadNameSource; expectedName?: string };
@@ -128,6 +140,8 @@ export type SessionIndexEntry = {
   model?: string;
   lastOrdinal: number;
   rolloutBytes?: number;
+  parentSessionId?: string;
+  forkPoint?: number;
 };
 
 type SessionMetadata = Omit<SessionIndexEntry, 'rolloutPath'>;
@@ -145,7 +159,7 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function persistedStateFromAgentState(
+export function persistedStateFromAgentState(
   state: AgentState,
   keepDraft = false,
 ): PersistedSessionState {
@@ -196,7 +210,7 @@ function sanitizeMessagesForResume(messages: AgentMessage[]): AgentMessage[] {
   return sanitized;
 }
 
-function hydratePersistedState(persisted: PersistedSessionState): AgentState {
+export function hydratePersistedState(persisted: PersistedSessionState): AgentState {
   const initial = createInitialState();
   return {
     ...initial,
@@ -212,6 +226,7 @@ function hydratePersistedState(persisted: PersistedSessionState): AgentState {
     showThinking: persisted.showThinking ?? initial.showThinking,
     thinkingMode: persisted.thinkingMode,
     totalCost: persisted.totalCost,
+    sideConversation: null,
   };
 }
 
@@ -246,6 +261,9 @@ function applyEvent(state: AgentState, event: YetSessionEvent) {
   switch (event.type) {
     case 'session_meta':
     case 'thread_name_updated':
+      break;
+    case 'fork_snapshot':
+      Object.assign(state, hydratePersistedState(event.payload.state));
       break;
     case 'turn_context':
       state.currentModel = event.payload.model;
@@ -356,6 +374,8 @@ function loadedSessionFromLines(lines: YetRolloutLine[], rolloutPath: string): L
     updatedAt: savedAt,
     ...(title ? { name: title } : {}),
     rolloutPath,
+    ...(meta.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
+    ...(typeof meta.forkPoint === 'number' ? { forkPoint: meta.forkPoint } : {}),
     state: persistedStateFromAgentState(
       {
         ...state,
@@ -379,6 +399,8 @@ function metadataFromLoadedSession(session: LoadedYetSession, rolloutPath: strin
     ...(preview ? { preview } : {}),
     model: session.state.currentModel,
     lastOrdinal: -1,
+    ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+    ...(typeof session.forkPoint === 'number' ? { forkPoint: session.forkPoint } : {}),
   };
 }
 
@@ -567,6 +589,8 @@ function listEntriesFromIndex(entries: Map<string, SessionIndexEntry>, yetHome: 
         ...(entry.name ? { title: entry.name } : {}),
         ...(entry.preview ? { preview: entry.preview } : {}),
         rolloutPath: path,
+        ...(entry.parentSessionId ? { parentSessionId: entry.parentSessionId } : {}),
+        ...(typeof entry.forkPoint === 'number' ? { forkPoint: entry.forkPoint } : {}),
       } satisfies YetSessionListEntry,
     ];
   });
@@ -745,6 +769,8 @@ export class SessionRecorder {
     lock: SessionLock;
     lines: YetRolloutLine[];
     title?: string;
+    parentSessionId?: string;
+    forkPoint?: number;
   }) {
     this.sessionId = options.sessionId;
     this.rolloutPath = options.rolloutPath;
@@ -760,6 +786,8 @@ export class SessionRecorder {
             sessionId: options.sessionId,
             cwd: options.cwd,
             createdAt: options.createdAt,
+            ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
+            ...(typeof options.forkPoint === 'number' ? { forkPoint: options.forkPoint } : {}),
           },
         };
     this.metadata = {
@@ -769,6 +797,8 @@ export class SessionRecorder {
       updatedAt: options.lines.at(-1)?.timestamp ?? options.createdAt,
       ...(options.title ? { name: options.title } : {}),
       lastOrdinal: this.nextOrdinal - 1,
+      ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
+      ...(typeof options.forkPoint === 'number' ? { forkPoint: options.forkPoint } : {}),
     };
     for (const line of options.lines) metadataFromEvent(this.metadata, line, line.timestamp);
   }
@@ -780,6 +810,8 @@ export class SessionRecorder {
     createdAt?: string;
     title?: string;
     yetHome?: string;
+    parentSessionId?: string;
+    forkPoint?: number;
   }) {
     const yetHome = options.yetHome ?? DEFAULT_YET_HOME;
     const createdAt = options.createdAt ?? new Date().toISOString();
@@ -799,11 +831,17 @@ export class SessionRecorder {
         lock,
         lines,
         title: options.title ?? nameFromLines(lines),
+        parentSessionId: meta?.parentSessionId ?? options.parentSessionId,
+        forkPoint: meta?.forkPoint ?? options.forkPoint,
       });
     } catch (error) {
       await releaseSessionLock(lock);
       throw error;
     }
+  }
+
+  get lastOrdinal() {
+    return this.nextOrdinal - 1;
   }
 
   record(event: Exclude<YetSessionEvent, { type: 'session_meta' }>) {

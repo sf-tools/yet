@@ -4,12 +4,14 @@ import { deleteSlashCommand } from './delete';
 import { effortSlashCommand } from './effort';
 import { exitSlashCommand } from './exit';
 import { fastSlashCommand } from './fast';
+import { forkSlashCommand } from './fork';
 import { modelSlashCommand } from './model';
 import { planningSlashCommand } from './planning';
 import { permissionsSlashCommand } from './permissions';
 import { renameSlashCommand } from './rename';
 import { resumeSlashCommand } from './resume';
 import { statusSlashCommand } from './status';
+import { btwSlashCommand } from './btw';
 
 export const builtinSlashCommands = [
   statusSlashCommand,
@@ -21,6 +23,8 @@ export const builtinSlashCommands = [
   compactSlashCommand,
   copySlashCommand,
   resumeSlashCommand,
+  forkSlashCommand,
+  btwSlashCommand,
   renameSlashCommand,
   deleteSlashCommand,
   exitSlashCommand,

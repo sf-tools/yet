@@ -28,6 +28,7 @@ export const statusSlashCommand: SlashCommand = {
       .getActiveToolSummaries()
       .flatMap(tool => tool.names)
       .join(', ');
+    const lineage = context.getSessionLineage();
     const rows: Array<[string, string]> = [
       ['app', 'Yet'],
       ['version', APP_VERSION],
@@ -47,6 +48,13 @@ export const statusSlashCommand: SlashCommand = {
       ['conversation id', context.getSessionId()],
       ['request id', context.getLastRequestId() ?? 'n/a'],
       ['session title', context.getThreadTitle() ?? 'untitled'],
+      ...(lineage.side ? [['session kind', 'side conversation'] as [string, string]] : []),
+      ...(lineage.parentSessionId
+        ? [['forked from', lineage.parentSessionId] as [string, string]]
+        : []),
+      ...(typeof lineage.forkPoint === 'number'
+        ? [['fork point', String(lineage.forkPoint)] as [string, string]]
+        : []),
     ];
 
     context.printEntries([{ type: 'plain', text: formatRows(rows) }]);

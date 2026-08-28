@@ -43,10 +43,23 @@ export type CompactedHistoryEntry = {
   automatic: boolean;
 };
 
+export type ForkedHistoryEntry = {
+  type: 'forked';
+  parentSessionId: string;
+  parentTitle?: string;
+};
+
+export type ResumeHintHistoryEntry = {
+  type: 'resume_hint';
+  command: string;
+};
+
 export type HistoryEntry =
   | { type: 'entry'; kind: EntryKind; text: string }
   | { type: 'plain'; text: string }
   | { type: 'ansi'; text: string }
+  | ForkedHistoryEntry
+  | ResumeHintHistoryEntry
   | CompactedHistoryEntry
   | ToolHistoryEntry;
 

@@ -13,7 +13,12 @@ import type { AgentState, QueuedSubmission } from './types';
 export type AgentStore = ReturnType<typeof buildAgentStore>;
 
 function hasVisibleContent(entry: HistoryEntry) {
-  if (entry.type === 'tool' || entry.type === 'compacted') return true;
+  if (
+    entry.type === 'tool' ||
+    entry.type === 'compacted' ||
+    entry.type === 'forked' ||
+    entry.type === 'resume_hint'
+  ) return true;
   if (entry.type === 'plain' || entry.type === 'ansi') return entry.text.trim().length > 0;
   return entry.text.trim().length > 0;
 }
@@ -205,6 +210,11 @@ function buildAgentStore(initialState: AgentState) {
 
     setCompacting(compacting: boolean) {
       state.compacting = compacting;
+      return state;
+    },
+
+    setSideConversation(sideConversation: AgentState['sideConversation']) {
+      state.sideConversation = sideConversation;
       return state;
     },
 

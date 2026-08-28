@@ -4,6 +4,7 @@ export type InputBinding =
   | { type: 'interrupt' }
   | { type: 'pasteImage' }
   | { type: 'escape' }
+  | { type: 'toggleSideConversation' }
   | { type: 'toggleThinkingMode' }
   | { type: 'togglePreviews' }
   | { type: 'acceptSuggestion' }
@@ -59,6 +60,8 @@ export function resolveInputBinding(data: Buffer | string): InputBinding | null 
   }
   if (input === 'c' && keypress.ctrl) return { type: 'interrupt' };
   if (keypress.name === 'escape') return { type: 'escape' };
+  if (keypress.sequence === '\u001f' || (input === '/' && keypress.ctrl))
+    return { type: 'toggleSideConversation' };
   if (input === 'o' && keypress.ctrl) return { type: 'togglePreviews' };
   if (keypress.name === 'tab' && keypress.shift) return { type: 'toggleThinkingMode' };
   if (keypress.name === 'tab') return { type: 'acceptSuggestion' };

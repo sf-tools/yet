@@ -14,6 +14,8 @@ export type SlashCommandContext = {
   store: AgentStore;
   cleanup(code?: number): void;
   deleteCurrentSession(): Promise<void>;
+  forkCurrentSession(name?: string): Promise<void>;
+  startSideConversation(question?: string): Promise<void>;
   compactConversation(options?: { manual?: boolean; force?: boolean }): Promise<boolean>;
   setCurrentModel(model: string): void;
   setThinkingMode(thinkingMode: ThinkingMode): void;
@@ -30,6 +32,7 @@ export type SlashCommandContext = {
   getLastRequestId(): string | null;
   getLastAssistantResponse(): string | null;
   getThreadTitle(): string | null;
+  getSessionLineage(): { parentSessionId?: string; forkPoint?: number; side: boolean };
   setThreadTitle(title: string | null): void;
   copyToClipboard(text: string): Promise<void>;
   printEntries(entries: HistoryEntry[]): void;

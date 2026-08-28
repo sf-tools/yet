@@ -180,7 +180,9 @@ function buildNoticeLine(state: AgentState, ctx: RenderContext) {
 
 export function renderFooter(state: AgentState, ctx: RenderContext): Block {
   if (state.busy && state.inputChars.length > 0) {
-    const contextLeft = formatContextLeft(state);
+    const contextLeft = state.sideConversation?.active
+      ? 'Side from main thread · ctrl + / to switch · ctrl + c to close'
+      : formatContextLeft(state);
     return [
       justifyLine(
         [span(LEFT_MARGIN), span('tab to queue message', ctx.theme.dimmed)],
@@ -210,7 +212,11 @@ export function renderFooter(state: AgentState, ctx: RenderContext): Block {
       ? [span(' · ', ctx.theme.subtle), span('plan mode', chalk.magentaBright)]
       : []),
   ];
-  const rightSegments = fileChangeSummarySegments(state, ctx);
+  const rightSegments = state.sideConversation?.active
+    ? [span('Side from main thread · ctrl + / to switch · ctrl + c to close', ctx.theme.dimmed)]
+    : state.sideConversation
+      ? [span('ctrl + / for side', ctx.theme.dimmed)]
+    : fileChangeSummarySegments(state, ctx);
   const width = Math.max(1, ctx.width);
   const combinedSegments = [
     ...locationSegments,

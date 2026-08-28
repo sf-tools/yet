@@ -38,4 +38,5 @@ export const createInitialState = (): AgentState => ({
   planningMode: false,
   showThinking: true,
   compacting: false,
+  sideConversation: null,
 });

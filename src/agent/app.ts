@@ -27,10 +27,16 @@ import {
   createTurnContextEvent,
   hydrateStateFromSession,
   loadYetSession,
+  persistedStateFromAgentState,
   SessionRecorder,
   type ThreadNameSource,
   type YetSessionEvent,
 } from './session-storage';
+import {
+  cloneInactiveAgentState,
+  createSideConversationState,
+  SIDE_DEVELOPER_INSTRUCTIONS,
+} from './side-conversation';
 import { createProvisionalThreadTitle, startBackgroundThreadTitle, type BackgroundThreadTitleRequest } from './thread-title';
 import { normalizePtyOutput, plain, installSegmentContainingPolyfill } from '@/text';
 import { handleAbortKeypress, createAbortController, resetAbortState } from './abort';
@@ -109,6 +115,26 @@ export type AgentAppOptions = {
   model?: string;
   thinkingMode?: AgentState['thinkingMode'];
   permissionMode?: PermissionMode;
+  parentSessionId?: string;
+  forkPoint?: number;
+};
+
+type SideConversationRuntime = {
+  active: boolean;
+  parentSessionId: string;
+  parentState: AgentState;
+  parentTitle: string | null;
+  parentLastRequestId: string | null;
+  parentRolloutPath?: string;
+  parentCreatedAt?: string;
+  parentLineageId?: string;
+  parentForkPoint?: number;
+  parentFileBaselines: Map<string, string | null>;
+  sideSessionId: string;
+  sideState: AgentState;
+  sideLastRequestId: string | null;
+  sideFileBaselines: Map<string, string | null>;
+  closeRequested: boolean;
 };
 
 export class AgentApp {
@@ -158,7 +184,11 @@ export class AgentApp {
   private sessionRecorder: SessionRecorder | null = null;
   private sessionRolloutPath?: string;
   private sessionCreatedAt?: string;
+  private sessionParentId?: string;
+  private sessionForkPoint?: number;
+  private sideConversation: SideConversationRuntime | null = null;
   private drainingQueuedSubmissions = false;
+  private activeSubmissionTask: Promise<void> | null = null;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private footerNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   private renderScheduled = false;
@@ -321,6 +351,9 @@ export class AgentApp {
         slashCommandLength: this.getSlashCommandLength(),
         skillNames: this.skills.map(skill => skill.name),
         showCapabilitiesHint: this.state.historyEntries.length === 0,
+        placeholder: this.sideConversationActive
+          ? 'Ask a follow-up question'
+          : 'Describe a task or ask a question',
       },
       ctx,
     ).block;
@@ -356,6 +389,10 @@ export class AgentApp {
     return this.store.getState();
   }
 
+  private get sideConversationActive() {
+    return this.sideConversation?.active === true;
+  }
+
   private setBusy(busy: boolean) {
     if (busy && !this.state.busy) this.busyStartedAt = Date.now();
     if (!busy) this.busyStartedAt = null;
@@ -372,6 +409,8 @@ export class AgentApp {
     this.threadTitle = options.threadTitle?.trim() ? options.threadTitle.trim() : null;
     this.sessionRolloutPath = options.rolloutPath;
     this.sessionCreatedAt = options.sessionCreatedAt;
+    this.sessionParentId = options.parentSessionId;
+    this.sessionForkPoint = options.forkPoint;
 
     this.statusAnimationTimer = setInterval(() => {
       if (!this.state.busy || this.state.closed) return;
@@ -419,6 +458,8 @@ export class AgentApp {
       rolloutPath: this.sessionRolloutPath,
       createdAt: this.sessionCreatedAt,
       title: this.threadTitle ?? undefined,
+      parentSessionId: this.sessionParentId,
+      forkPoint: this.sessionForkPoint,
     });
     this.sessionRolloutPath = this.sessionRecorder.rolloutPath;
 
@@ -460,7 +501,8 @@ export class AgentApp {
     if (!this.prepareShutdown()) return;
 
     if (code === 0) {
-      const exitLines = serializeBlock(renderExitSummary(this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null));
+      const resumableSessionId = this.sideConversation?.parentSessionId ?? this.sessionId;
+      const exitLines = serializeBlock(renderExitSummary(this.hasResumableSession() ? `yet --resume=${resumableSessionId}` : null));
 
       // The user sees the closing summary immediately. Only queued local writes remain afterward.
       if (exitLines.length > 0) process.stdout.write(`${exitLines.join('\n')}\n`);
@@ -597,7 +639,9 @@ export class AgentApp {
   };
 
   private hasResumableSession() {
-    return this.state.historyEntries.length > 0;
+    return this.sideConversation
+      ? this.sideConversation.parentState.historyEntries.length > 0
+      : this.state.historyEntries.length > 0;
   }
 
   private hasRainbowPhraseVisible() {
@@ -620,6 +664,7 @@ export class AgentApp {
   }
 
   private recordSessionEvent(event: Exclude<YetSessionEvent, { type: 'session_meta' }>) {
+    if (this.sideConversationActive) return;
     this.sessionRecorder?.record(event);
   }
 
@@ -628,7 +673,7 @@ export class AgentApp {
   }
 
   private startThreadTitleGeneration(userMessage: string) {
-    if (this.threadTitle || this.threadTitleRequest || this.state.closed) return;
+    if (this.sideConversationActive || this.threadTitle || this.threadTitleRequest || this.state.closed) return;
     const expectedTitle = createProvisionalThreadTitle(userMessage);
     if (!expectedTitle) return;
 
@@ -651,6 +696,9 @@ export class AgentApp {
   }
 
   private async switchToSession(sessionId: string) {
+    if (this.sideConversationActive)
+      throw new Error("'/resume' is unavailable in side conversations. Press Ctrl+C to return to the main thread first.");
+    this.discardDormantSideConversation();
     if (sessionId === this.sessionId) {
       this.showFooterNotice(`Already on ${this.threadTitle ?? 'this thread'}`);
       return;
@@ -679,6 +727,8 @@ export class AgentApp {
     this.sessionId = session.sessionId;
     this.sessionRolloutPath = session.rolloutPath;
     this.sessionCreatedAt = session.createdAt;
+    this.sessionParentId = session.parentSessionId;
+    this.sessionForkPoint = session.forkPoint;
     this.threadTitle = session.name?.trim() ? session.name.trim() : null;
     this.lastRequestId = null;
     this.historyNavigationIndex = null;
@@ -689,6 +739,240 @@ export class AgentApp {
     this.resetRenderedScreen();
     this.render();
     this.showFooterNotice(`Switched to ${this.threadTitle ?? 'Untitled thread'}`);
+  }
+
+  private async forkCurrentSession(name?: string) {
+    if (this.sideConversationActive)
+      throw new Error("'/fork' is unavailable in side conversations. Press Ctrl+C to return to the main thread first.");
+    this.discardDormantSideConversation();
+    if (!this.hasResumableSession())
+      throw new Error('A thread must contain at least one turn before it can be forked.');
+    if (!this.sessionRecorder) throw new Error('session recorder is not available');
+    if (this.state.abortController)
+      throw new Error("'/fork' is unavailable while a task is running.");
+
+    await this.sessionRecorder.flush();
+    const parentSessionId = this.sessionId;
+    const parentTitle = this.threadTitle;
+    const forkPoint = this.sessionRecorder.lastOrdinal;
+    const childSessionId = randomUUID();
+    const childCreatedAt = new Date().toISOString();
+    const childState = cloneInactiveAgentState(this.state);
+    childState.historyEntries.push({
+      type: 'forked',
+      parentSessionId,
+      ...(parentTitle ? { parentTitle } : {}),
+    });
+    childState.historyEntries.push({
+      type: 'resume_hint',
+      command: `yet --resume=${parentSessionId}`,
+    });
+
+    const childRecorder = await SessionRecorder.open({
+      sessionId: childSessionId,
+      cwd: process.cwd(),
+      createdAt: childCreatedAt,
+      title: name,
+      parentSessionId,
+      forkPoint,
+    });
+    childRecorder.record({
+      type: 'fork_snapshot',
+      payload: { state: persistedStateFromAgentState(childState) },
+    });
+    if (name) {
+      childRecorder.record({
+        type: 'thread_name_updated',
+        payload: { name, source: 'manual' },
+      });
+    }
+
+    try {
+      await childRecorder.flush();
+      await this.sessionRecorder.close();
+    } catch (error) {
+      await childRecorder.deleteSession().catch(() => {});
+      throw error;
+    }
+
+    this.threadTitleRequest?.cancel();
+    this.threadTitleRequest = null;
+    this.sessionRecorder = childRecorder;
+    this.sessionId = childSessionId;
+    this.sessionRolloutPath = childRecorder.rolloutPath;
+    this.sessionCreatedAt = childCreatedAt;
+    this.sessionParentId = parentSessionId;
+    this.sessionForkPoint = forkPoint;
+    this.threadTitle = name?.trim() ? name.trim() : null;
+    this.lastRequestId = null;
+    this.historyNavigationIndex = null;
+    this.historyNavigationDraft = '';
+    this.preferredComposerColumn = null;
+    this.store.replaceState(childState);
+    this.resetRenderedScreen();
+    this.render();
+  }
+
+  private async startSideConversation(question?: string) {
+    if (this.sideConversation) {
+      throw new Error(
+        'A side conversation is already open. Press Ctrl+C to return before starting another.',
+      );
+    }
+    if (!this.hasResumableSession()) {
+      throw new Error(
+        "'/btw' is unavailable until the current conversation has started. Send a message first, then try /btw again.",
+      );
+    }
+    if (this.state.abortController)
+      throw new Error("'/btw' is unavailable while a task is running.");
+
+    await this.sessionRecorder?.flush();
+    const parentSessionId = this.sessionId;
+    const parentTitle = this.threadTitle;
+    const parentState = cloneInactiveAgentState(this.state);
+    parentState.footerNotice = null;
+    const sideSessionId = randomUUID();
+    const sideState = createSideConversationState(
+      parentState,
+      parentSessionId,
+      parentTitle ?? undefined,
+    );
+    this.sideConversation = {
+      active: true,
+      parentSessionId,
+      parentState,
+      parentTitle,
+      parentLastRequestId: this.lastRequestId,
+      parentRolloutPath: this.sessionRolloutPath,
+      parentCreatedAt: this.sessionCreatedAt,
+      parentLineageId: this.sessionParentId,
+      parentForkPoint: this.sessionForkPoint,
+      parentFileBaselines: new Map(this.sessionFileBaselines),
+      sideSessionId,
+      sideState,
+      sideLastRequestId: null,
+      sideFileBaselines: new Map(),
+      closeRequested: false,
+    };
+
+    this.threadTitleRequest?.cancel();
+    this.threadTitleRequest = null;
+    this.sessionId = sideSessionId;
+    this.sessionRolloutPath = undefined;
+    this.sessionCreatedAt = undefined;
+    this.sessionParentId = parentSessionId;
+    this.sessionForkPoint = this.sessionRecorder?.lastOrdinal;
+    this.threadTitle = null;
+    this.lastRequestId = null;
+    this.sessionFileBaselines.clear();
+    this.store.replaceState(sideState);
+    if (question) this.store.enqueueSubmission({ text: question });
+    this.resetRenderedScreen();
+    this.render();
+  }
+
+  private closeSideConversation() {
+    const side = this.sideConversation;
+    if (!side || !side.active || this.state.busy) return false;
+
+    this.sideConversation = null;
+    this.sessionId = side.parentSessionId;
+    this.sessionRolloutPath = side.parentRolloutPath;
+    this.sessionCreatedAt = side.parentCreatedAt;
+    this.sessionParentId = side.parentLineageId;
+    this.sessionForkPoint = side.parentForkPoint;
+    this.threadTitle = side.parentTitle;
+    this.lastRequestId = side.parentLastRequestId;
+    this.sessionFileBaselines.clear();
+    for (const [path, baseline] of side.parentFileBaselines) {
+      this.sessionFileBaselines.set(path, baseline);
+    }
+    this.historyNavigationIndex = null;
+    this.historyNavigationDraft = '';
+    this.preferredComposerColumn = null;
+    side.parentState.sideConversation = null;
+    this.store.replaceState(side.parentState);
+    this.resetRenderedScreen();
+    this.render();
+    return true;
+  }
+
+  private discardDormantSideConversation() {
+    if (!this.sideConversation || this.sideConversation.active) return false;
+    this.sideConversation = null;
+    this.store.setSideConversation(null);
+    return true;
+  }
+
+  private replaceSessionFileBaselines(baselines: Map<string, string | null>) {
+    this.sessionFileBaselines.clear();
+    for (const [path, baseline] of baselines) this.sessionFileBaselines.set(path, baseline);
+  }
+
+  private toggleSideConversation() {
+    const side = this.sideConversation;
+    if (!side) return false;
+    if (this.state.busy || this.state.pendingApproval || this.state.pendingChoice) {
+      this.showFooterNotice('Side switching is available after the current turn.');
+      return true;
+    }
+
+    if (side.active) {
+      side.sideState = cloneInactiveAgentState(this.state);
+      side.sideLastRequestId = this.lastRequestId;
+      side.sideFileBaselines = new Map(this.sessionFileBaselines);
+      side.active = false;
+      side.parentState.sideConversation = {
+        parentSessionId: side.parentSessionId,
+        ...(side.parentTitle ? { parentTitle: side.parentTitle } : {}),
+        active: false,
+      };
+
+      this.sessionId = side.parentSessionId;
+      this.sessionRolloutPath = side.parentRolloutPath;
+      this.sessionCreatedAt = side.parentCreatedAt;
+      this.sessionParentId = side.parentLineageId;
+      this.sessionForkPoint = side.parentForkPoint;
+      this.threadTitle = side.parentTitle;
+      this.lastRequestId = side.parentLastRequestId;
+      this.replaceSessionFileBaselines(side.parentFileBaselines);
+      this.store.replaceState(side.parentState);
+    } else {
+      const parentState = cloneInactiveAgentState(this.state);
+      parentState.sideConversation = null;
+      side.parentState = parentState;
+      side.parentTitle = this.threadTitle;
+      side.parentLastRequestId = this.lastRequestId;
+      side.parentRolloutPath = this.sessionRolloutPath;
+      side.parentCreatedAt = this.sessionCreatedAt;
+      side.parentLineageId = this.sessionParentId;
+      side.parentForkPoint = this.sessionForkPoint;
+      side.parentFileBaselines = new Map(this.sessionFileBaselines);
+      side.active = true;
+      side.sideState.sideConversation = {
+        parentSessionId: side.parentSessionId,
+        ...(side.parentTitle ? { parentTitle: side.parentTitle } : {}),
+        active: true,
+      };
+
+      this.sessionId = side.sideSessionId;
+      this.sessionRolloutPath = undefined;
+      this.sessionCreatedAt = undefined;
+      this.sessionParentId = side.parentSessionId;
+      this.sessionForkPoint = this.sessionRecorder?.lastOrdinal;
+      this.threadTitle = null;
+      this.lastRequestId = side.sideLastRequestId;
+      this.replaceSessionFileBaselines(side.sideFileBaselines);
+      this.store.replaceState(side.sideState);
+    }
+
+    this.historyNavigationIndex = null;
+    this.historyNavigationDraft = '';
+    this.preferredComposerColumn = null;
+    this.resetRenderedScreen();
+    this.render();
+    return true;
   }
 
   private persistPreferences() {
@@ -802,7 +1086,12 @@ export class AgentApp {
         ].join('\n')
       : '';
     const skillsPrompt = renderSkillsCatalog(this.skills);
-    const runtimePrompt = [permissionPrompt, planningModePrompt, skillsPrompt].filter(Boolean).join('\n\n');
+    const runtimePrompt = [
+      permissionPrompt,
+      planningModePrompt,
+      this.sideConversationActive ? SIDE_DEVELOPER_INSTRUCTIONS : '',
+      skillsPrompt,
+    ].filter(Boolean).join('\n\n');
 
     const [first, ...rest] = messages;
     if (first?.role === 'system' && typeof first.content === 'string') {
@@ -1221,6 +1510,17 @@ export class AgentApp {
         return;
       }
 
+      if (
+        this.sideConversationActive &&
+        !['copy', 'status'].includes(slashCommand.command.name)
+      ) {
+        this.persistEntry(
+          EntryKind.Error,
+          `/${slashCommand.invocation} is unavailable in side conversations. Press Ctrl+C to return to the main thread first.`,
+        );
+        return;
+      }
+
       this.store.setBusyStatusText(`/${slashCommand.invocation}`);
       this.setBusy(true);
       this.render();
@@ -1231,6 +1531,8 @@ export class AgentApp {
             store: this.store,
             cleanup: code => this.cleanup(code),
             deleteCurrentSession: () => this.deleteCurrentSession(),
+            forkCurrentSession: name => this.forkCurrentSession(name),
+            startSideConversation: question => this.startSideConversation(question),
             compactConversation: options => this.compactConversation(options),
             setCurrentModel: model => this.setCurrentModel(model),
             setThinkingMode: thinkingMode => this.setThinkingMode(thinkingMode),
@@ -1247,6 +1549,13 @@ export class AgentApp {
             getLastRequestId: () => this.lastRequestId,
             getLastAssistantResponse: () => this.getLastAssistantResponse(),
             getThreadTitle: () => this.threadTitle,
+            getSessionLineage: () => ({
+              ...(this.sessionParentId ? { parentSessionId: this.sessionParentId } : {}),
+              ...(typeof this.sessionForkPoint === 'number'
+                ? { forkPoint: this.sessionForkPoint }
+                : {}),
+              side: this.sideConversationActive,
+            }),
             setThreadTitle: title => this.setThreadTitle(title),
             copyToClipboard: text => copyTextToClipboard(text),
             printEntries: entries => this.printEphemeralEntries(entries),
@@ -1276,7 +1585,7 @@ export class AgentApp {
       return;
     }
 
-    if (trimmed.startsWith('!')) {
+    if (trimmed.startsWith('!') && !this.sideConversationActive) {
       await this.runShellCommand(trimmed.slice(1));
       return;
     }
@@ -1566,6 +1875,11 @@ export class AgentApp {
       this.render();
     }
 
+    if (this.sideConversationActive && this.sideConversation?.closeRequested) {
+      this.closeSideConversation();
+      return;
+    }
+
     if (immediateSteer && !this.state.closed) {
       await this.processSubmission(immediateSteer);
       return;
@@ -1665,14 +1979,31 @@ export class AgentApp {
       return;
     }
 
-    if (this.state.busy || this.state.queuedSubmissions.length > 0 || this.drainingQueuedSubmissions) {
+    if (
+      this.activeSubmissionTask ||
+      this.state.busy ||
+      this.state.queuedSubmissions.length > 0 ||
+      this.drainingQueuedSubmissions
+    ) {
       this.store.enqueueSubmission({ text: raw });
+      if (
+        slashCommand?.type === 'resolved' &&
+        slashCommand.command.name === 'btw'
+      ) {
+        this.showFooterNotice('Side starting...', 60_000);
+      }
       this.render();
       void this.drainQueuedSubmissions();
       return;
     }
 
-    await this.processSubmission(raw);
+    const task = this.processSubmission(raw);
+    this.activeSubmissionTask = task;
+    void task
+      .catch(error => this.handleFatalError(error))
+      .finally(() => {
+        if (this.activeSubmissionTask === task) this.activeSubmissionTask = null;
+      });
   }
 
   private queueComposerDraft() {
@@ -1936,6 +2267,20 @@ export class AgentApp {
     }
 
     if (binding.type === 'interrupt') {
+      if (this.sideConversationActive && this.state.inputChars.length === 0) {
+        const side = this.sideConversation;
+        if (this.state.pendingApproval) this.resolvePendingApproval('deny');
+        if (this.state.pendingChoice) this.resolvePendingChoice(null);
+        if (this.state.busy) {
+          if (side) side.closeRequested = true;
+          this.interruptActiveTurn(false);
+          this.render();
+        } else {
+          this.closeSideConversation();
+        }
+        return;
+      }
+
       if (this.interruptActiveTurn(false)) {
         this.render();
         return;
@@ -1959,6 +2304,11 @@ export class AgentApp {
 
     if (binding.type === 'escape') {
       this.handleEscape();
+      return;
+    }
+
+    if (binding.type === 'toggleSideConversation') {
+      this.toggleSideConversation();
       return;
     }
 

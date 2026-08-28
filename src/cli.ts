@@ -89,6 +89,8 @@ function printHelp() {
       ['/compact', 'Compact the current conversation'],
       ['/copy', "Copy the agent's latest response to the clipboard"],
       ['/resume', 'Resume another saved workspace session'],
+      ['/fork [name]', 'Fork the current chat'],
+      ['/btw [question]', 'Start an ephemeral side conversation'],
       ['/rename', 'Rename the current session'],
       ['!<command>', 'Run a command through the active permission policy'],
       ['@path/to/file', 'Attach a file to your prompt'],

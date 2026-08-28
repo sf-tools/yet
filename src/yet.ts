@@ -48,6 +48,8 @@ const app = new AgentApp({
   threadTitle: resumeSession?.name,
   rolloutPath: resumeSession?.rolloutPath,
   sessionCreatedAt: resumeSession?.createdAt,
+  parentSessionId: resumeSession?.parentSessionId,
+  forkPoint: resumeSession?.forkPoint,
   model: cli.model,
   thinkingMode: cli.thinkingMode,
   permissionMode: cli.permissionMode,

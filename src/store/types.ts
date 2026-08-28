@@ -13,6 +13,12 @@ export type QueuedSubmission = {
   planningMode?: boolean;
 };
 
+export type SideConversationState = {
+  parentSessionId: string;
+  parentTitle?: string;
+  active: boolean;
+};
+
 export type AgentState = {
   messages: AgentMessage[];
   inputChars: string[];
@@ -50,4 +56,5 @@ export type AgentState = {
   planningMode: boolean;
   showThinking: boolean;
   compacting: boolean;
+  sideConversation: SideConversationState | null;
 };

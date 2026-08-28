@@ -15,6 +15,7 @@ export type ComposerState = {
   slashCommandLength?: number;
   skillNames?: string[];
   showCapabilitiesHint?: boolean;
+  placeholder?: string;
 };
 
 function adjustComposerState(state: ComposerState) {
@@ -257,7 +258,7 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
   const placeholderFill = (occupiedWidth: number) => repeat(' ', Math.max(0, contentWidth + 1 - occupiedWidth - hintWidth));
 
   if (state.inputChars.length === 0) {
-    const label = 'Describe a task or ask a question';
+    const label = state.placeholder ?? 'Describe a task or ask a question';
     const [cursorCharacter = ' ', ...labelTail] = Array.from(label);
     const fill = placeholderFill(promptWidth + 1 + widthOf(label));
 

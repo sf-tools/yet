@@ -223,6 +223,41 @@ function renderMetaEntry(text: string, ctx: RenderContext): Block {
   return indent(wrapTextBlock(text, Math.max(1, ctx.width - 2), style), LEFT_MARGIN);
 }
 
+function renderForkedEntry(
+  entry: Extract<HistoryEntry, { type: 'forked' }>,
+  ctx: RenderContext,
+): Block {
+  const parentId = entry.parentSessionId;
+  return [
+    line(
+      span(LEFT_MARGIN),
+      span('• ', ctx.theme.dimmed),
+      span('Thread forked from ', ctx.theme.foreground),
+      ...(entry.parentTitle
+        ? [
+            span(entry.parentTitle, chalk.cyanBright),
+            span(' (', ctx.theme.foreground),
+            span(parentId, chalk.cyanBright),
+            span(')', ctx.theme.foreground),
+          ]
+        : [span(parentId, chalk.cyanBright)]),
+    ),
+  ];
+}
+
+function renderResumeHintEntry(
+  entry: Extract<HistoryEntry, { type: 'resume_hint' }>,
+  ctx: RenderContext,
+): Block {
+  return [
+    line(
+      span(LEFT_MARGIN),
+      span('To continue this session, run ', ctx.theme.foreground),
+      span(entry.command, chalk.cyanBright),
+    ),
+  ];
+}
+
 function renderCompactedEntry(
   entry: Extract<HistoryEntry, { type: 'compacted' }>,
   ctx: RenderContext,
@@ -262,6 +297,8 @@ export function renderHistoryEntry(
 ): Block {
   if (entry.type === 'tool') return renderToolHistoryEntry(entry, ctx);
   if (entry.type === 'compacted') return renderCompactedEntry(entry, ctx);
+  if (entry.type === 'forked') return renderForkedEntry(entry, ctx);
+  if (entry.type === 'resume_hint') return renderResumeHintEntry(entry, ctx);
   if (entry.type === 'ansi') return indent(rawBlock(entry.text), LEFT_MARGIN);
   if (entry.type === 'plain')
     return indent(wrapTextBlock(entry.text, Math.max(1, ctx.width)), LEFT_MARGIN);
