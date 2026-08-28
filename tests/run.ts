@@ -18,12 +18,31 @@ import {
   renderSkillsCatalog,
   selectedSkills,
 } from '@/agent/skills';
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { OPENAI_MODEL_OPTIONS, getOpenAIProviderModelId } from '@/config';
 import { normalizeYetPreferences } from '@/config';
 import { builtinSlashCommands, type SlashCommandContext } from '@/agent/slash-commands';
-import { createWorkspaceSandboxProfile, isPermissionMode, isPotentiallyUnsafeCommand, isWithinWorkspace, shouldPromptForTool } from '@/permissions';
+import {
+  createWorkspaceSandboxProfile,
+  isPermissionMode,
+  isPotentiallyUnsafeCommand,
+  isProtectedWorkspaceMetadataPath,
+  isWithinWorkspace,
+  prepareSandboxCommand,
+  resolvePermissionProfile,
+  shouldPromptForTool,
+} from '@/permissions';
 import {
   SessionRecorder,
   createTurnContextEvent,
@@ -434,6 +453,8 @@ if (statusEntries[0]?.type === 'plain') {
   check(statusEntries[0].text.includes('shell, apply_patch'), '/status reports active tools');
   check(statusEntries[0].text.includes('session-test'), '/status reports the session ID');
   check(statusEntries[0].text.includes('request-test'), '/status reports the request ID');
+  check(statusEntries[0].text.includes('workspace-write'), '/status reports the sandbox mode');
+  check(statusEntries[0].text.includes('on-request'), '/status reports the approval policy');
 }
 
 let copiedResponse = '';
@@ -516,6 +537,29 @@ check(
 );
 check(shouldPromptForTool({ mode: 'auto', requested: 'workspace', potentiallyUnsafe: true }), 'auto prompts for unsafe actions');
 check(!shouldPromptForTool({ mode: 'full', requested: 'elevated', potentiallyUnsafe: true }), 'full bypasses prompts');
+deepEqual(
+  resolvePermissionProfile('ask'),
+  {
+    sandboxMode: 'workspace-write',
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+  },
+  'Ask for approval uses the managed workspace sandbox',
+);
+equal(
+  resolvePermissionProfile('ask', { readOnly: true }).sandboxMode,
+  'read-only',
+  'planning mode narrows the sandbox to read-only',
+);
+deepEqual(
+  resolvePermissionProfile('full'),
+  {
+    sandboxMode: 'danger-full-access',
+    approvalPolicy: 'never',
+    approvalsReviewer: 'user',
+  },
+  'Full Access disables both sandboxing and approvals',
+);
 
 const cli = handleCliArgs(['-m', 'gpt-5.6-terra', '--effort', 'medium', '--permissions', 'auto']);
 check(cli.kind === 'start', 'valid CLI arguments start Yet');
@@ -531,13 +575,46 @@ const workspace = await mkdtemp(join(tmpdir(), 'yet-tests-'));
 try {
   check(isWithinWorkspace(join(workspace, 'src/file.ts'), workspace), 'child path is in workspace');
   check(!isWithinWorkspace(join(workspace, '..', 'outside'), workspace), 'parent path escapes');
+  check(
+    isProtectedWorkspaceMetadataPath(join(workspace, '.git', 'config'), workspace),
+    'git metadata is protected inside writable roots',
+  );
   const profile = createWorkspaceSandboxProfile(workspace);
   check(profile.includes('(deny default)'), 'sandbox defaults to deny');
   check(!profile.includes('(allow network'), 'sandbox does not allow network');
-  check(profile.includes('(allow file-write* (literal "/dev/null"))'), 'sandbox permits /dev/null');
+  check(profile.includes('(path "/dev/null")'), 'sandbox permits /dev/null');
   const readOnlyProfile = createWorkspaceSandboxProfile(workspace, { writable: false });
-  check(!readOnlyProfile.includes(`(subpath "${workspace}")`), 'read-only sandbox denies workspace writes');
-  check(readOnlyProfile.includes('(literal "/dev/null")'), 'read-only sandbox permits /dev/null');
+  check(
+    readOnlyProfile.includes(`(deny file-write* (subpath "${workspace}"))`),
+    'read-only sandbox denies workspace writes',
+  );
+  check(readOnlyProfile.includes('(path "/dev/null")'), 'read-only sandbox permits /dev/null');
+
+  const fakeBin = join(workspace, 'fake-bin');
+  const fakeBwrap = join(fakeBin, 'bwrap');
+  await mkdir(fakeBin);
+  await writeFile(fakeBwrap, '#!/bin/sh\nexit 0\n');
+  await chmod(fakeBwrap, 0o755);
+  const linuxSandbox = await prepareSandboxCommand({
+    mode: 'workspace-write',
+    workspaceRoot: workspace,
+    cwd: workspace,
+    shell: '/bin/sh',
+    command: 'true',
+    env: { PATH: fakeBin },
+    platform: 'linux',
+  });
+  equal(linuxSandbox.backend, 'bubblewrap', 'Linux uses the bubblewrap backend');
+  check(linuxSandbox.args.includes('--unshare-net'), 'bubblewrap creates a network namespace');
+  check(
+    linuxSandbox.args.some(
+      (value, index) =>
+        value === '--bind' &&
+        linuxSandbox.args[index + 1] === workspace &&
+        linuxSandbox.args[index + 2] === workspace,
+    ),
+    'bubblewrap mounts the workspace writable',
+  );
 
   const recorded: string[] = [];
   let planningMode = false;
@@ -569,6 +646,18 @@ try {
     /escapes the workspace/,
     'apply_patch rejects paths outside the workspace',
   );
+  await rejects(
+    registry.execute('apply_patch', {
+      patch: ['--- /dev/null', '+++ b/.git/config', '@@ -0,0 +1,1 @@', '+nope'].join('\n'),
+    }),
+    /protected workspace metadata/,
+    'apply_patch rejects protected workspace metadata',
+  );
+  await mkdir(join(workspace, '.git'));
+  const metadataWrite = await registry.execute('shell', {
+    command: 'printf denied > .git/config',
+  });
+  check(metadataWrite.output.includes('exit code: 1'), 'sandbox denies writes to git metadata');
   const shell = await registry.execute('shell', { command: 'printf sandbox-ok' });
   check(shell.output.includes('sandbox-ok'), 'shell runs in the workspace sandbox');
   check(!shell.output.includes('Operation not permitted'), 'shell skips mutating login startup files');
@@ -577,6 +666,26 @@ try {
   check(listed.output.includes('hello.txt'), 'sandboxed ls reads the workspace');
   check(!listed.output.includes('Operation not permitted'), 'sandboxed ls has no startup noise');
   check(!listed.output.includes('process exited with signal 0'), 'sandboxed ls has a clean exit');
+
+  if (process.platform === 'darwin' && existsSync('/usr/bin/nc')) {
+    const server = createServer(socket => socket.end());
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(0, '127.0.0.1', resolveListen);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('test server has no TCP port');
+      const networkAttempt = await registry.execute('shell', {
+        command: `/usr/bin/nc -z 127.0.0.1 ${address.port}`,
+      });
+      check(networkAttempt.output.includes('exit code: 1'), 'sandbox denies local TCP access');
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close(error => (error ? rejectClose(error) : resolveClose()));
+      });
+    }
+  }
 
   planningMode = true;
   deepEqual(

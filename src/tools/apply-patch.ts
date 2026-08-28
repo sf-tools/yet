@@ -3,7 +3,7 @@ import { basename, dirname, relative, resolve } from 'node:path';
 
 import { createFileChange, describeFileChange, normalizeLineEndings } from '@/file-changes';
 import type { FileChange } from '@/types';
-import { isWithinWorkspace } from '@/permissions';
+import { isProtectedWorkspaceMetadataPath, isWithinWorkspace } from '@/permissions';
 import {
   asObject,
   assertOnlyArguments,
@@ -215,6 +215,10 @@ async function resolvePatchPath(rawPath: string, workspaceRoot: string, allowOut
   if (!isWithinWorkspace(canonical, workspaceRoot))
     throw new Error(
       `patch path escapes the workspace: ${rawPath}; request elevated permissions explicitly`,
+    );
+  if (isProtectedWorkspaceMetadataPath(canonical, workspaceRoot))
+    throw new Error(
+      `patch path targets protected workspace metadata: ${rawPath}; request elevated permissions explicitly`,
     );
   return canonical;
 }

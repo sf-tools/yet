@@ -30,6 +30,27 @@ export const permissionsSlashCommand: SlashCommand = {
     }
 
     if (!isPermissionMode(mode)) throw new Error(`invalid permission mode: ${mode}`);
+    if (mode === 'full' && store.getState().permissionMode !== 'full') {
+      const confirmation = await requestChoice({
+        title: 'Enable full access?',
+        detail:
+          'Yet can edit any file on your computer and run commands with network access, without asking. This significantly increases the risk of data loss, leaks, or unexpected behavior.',
+        options: [
+          {
+            value: 'cancel',
+            label: 'Cancel',
+            detail: 'Go back without enabling full access',
+          },
+          {
+            value: 'confirm',
+            label: 'Yes, continue anyway',
+            detail: 'Apply full access for this session',
+          },
+        ],
+        recommendedValue: 'cancel',
+      });
+      if (confirmation?.value !== 'confirm') return;
+    }
     setPermissionMode(mode);
     showFooterNotice(`Permissions set to ${formatPermissionMode(mode)}`);
   },

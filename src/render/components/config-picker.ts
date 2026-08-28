@@ -12,7 +12,7 @@ export function renderConfigPicker(
   ctx: RenderContext,
 ): Block {
   const panelBackground = ctx.theme.composerBg();
-  const contentWidth = Math.max(1, ctx.width - 4);
+  const contentWidth = Math.max(1, ctx.width - 5);
   const labelWidth = picker.items.reduce(
     (width, item) => Math.max(width, widthOf(item.label)),
     0,

@@ -1,21 +1,18 @@
 import { spawn as spawnPty } from '@lydell/node-pty';
+import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { USER_SHELL } from '@/config';
-import {
-  createWorkspaceSandboxProfile,
-  isWithinWorkspace,
-  requireSandboxExec,
-  SANDBOX_EXEC_PATH,
-} from '@/permissions';
+import { isWithinWorkspace } from '@/permissions';
+import { prepareSandboxCommand, type SandboxMode } from '@/sandbox';
 import { normalizePtyOutput } from '@/text';
 import type { ShellResult } from '@/types';
 
 export type ShellExecutionOptions = {
   workspaceRoot: string;
   cwd?: string;
-  sandboxed: boolean;
-  writable?: boolean;
+  sandboxMode: SandboxMode;
+  writableRoots?: string[];
   timeoutMs?: number;
 };
 
@@ -23,37 +20,40 @@ export async function runUserShell(
   command: string,
   options: ShellExecutionOptions,
 ): Promise<ShellResult> {
-  const workspaceRoot = resolve(options.workspaceRoot);
-  const cwd = resolve(options.cwd ?? workspaceRoot);
+  const workspaceRoot = await realpath(resolve(options.workspaceRoot));
+  const cwd = await realpath(resolve(options.cwd ?? workspaceRoot));
+  const writableRoots = await Promise.all(
+    (options.writableRoots ?? []).map(root => realpath(resolve(root))),
+  );
   const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 120_000, 600_000));
 
-  if (options.sandboxed && !isWithinWorkspace(cwd, workspaceRoot))
-    throw new Error('sandboxed commands must start inside the current workspace');
-  if (options.sandboxed) await requireSandboxExec();
-
-  const executable = options.sandboxed ? SANDBOX_EXEC_PATH : USER_SHELL;
-  const args = options.sandboxed
-    ? [
-        '-p',
-        createWorkspaceSandboxProfile(workspaceRoot, { writable: options.writable }),
-        USER_SHELL,
-        '-c',
-        command,
-      ]
-    : ['-c', command];
+  const allowedWorkingRoots = [workspaceRoot, ...writableRoots];
+  if (
+    options.sandboxMode !== 'danger-full-access' &&
+    !allowedWorkingRoots.some(root => isWithinWorkspace(cwd, root))
+  )
+    throw new Error('sandboxed commands must start inside an allowed workspace root');
+  const prepared = await prepareSandboxCommand({
+    mode: options.sandboxMode,
+    workspaceRoot,
+    cwd,
+    shell: USER_SHELL,
+    command,
+    writableRoots,
+  });
 
   return await new Promise((resolveResult, reject) => {
     const chunks: string[] = [];
     let settled = false;
 
     try {
-      const proc = spawnPty(executable, args, {
+      const proc = spawnPty(prepared.executable, prepared.args, {
         name: 'xterm-256color',
         cols: Math.floor((process.stdout.columns || 120) / 1.5),
         rows: Math.floor((process.stdout.rows || 30) / 1.5),
         cwd,
         env: {
-          ...process.env,
+          ...prepared.env,
           TERM: 'xterm-256color',
           COLORTERM: process.env.COLORTERM || 'truecolor',
           FORCE_COLOR: process.env.FORCE_COLOR || '1',

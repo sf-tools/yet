@@ -54,7 +54,12 @@ import { createRenderContext, frameWidth, renderExitSummary, renderHeader, seria
 import { getLastAssistantResponse, type AgentImagePart, type AgentMessage, type AgentTextPart } from './messages';
 import { runAgentLoop } from './runner';
 import { BlockStreamPump } from './block-stream';
-import { shouldPromptForTool, type PermissionMode, type ToolPermission } from '@/permissions';
+import {
+  resolvePermissionProfile,
+  shouldPromptForTool,
+  type PermissionMode,
+  type ToolPermission,
+} from '@/permissions';
 
 import { createFailedToolEntry, createPendingToolEntry, createCompletedToolEntry } from './tool-history';
 
@@ -619,7 +624,7 @@ export class AgentApp {
     this.lastRenderRows = rows;
 
     if (!this.headerPrinted) {
-      this.appendPermanentLines(serializeBlock(renderHeader(ctx)));
+      this.appendPermanentLines(serializeBlock(renderHeader(ctx, this.state.permissionMode === 'full')));
       this.headerPrinted = true;
     }
 
@@ -1087,10 +1092,12 @@ export class AgentApp {
   }
 
   private getRuntimeMessages(messages: AgentMessage[] = this.state.messages, planningMode = this.state.planningMode): AgentMessage[] {
-    const permissionPrompt =
-      this.state.permissionMode === 'full'
-        ? '<permissions mode="full">The user explicitly enabled Full Access. Tools run without the workspace sandbox or approval prompts.</permissions>'
-        : `<permissions mode="${this.state.permissionMode}">Shell commands run in a network-denied workspace sandbox. Use permissions="elevated" with a justification when internet access or work outside the workspace is necessary.</permissions>`;
+    const permissionProfile = resolvePermissionProfile(this.state.permissionMode, {
+      readOnly: planningMode,
+    });
+    const permissionPrompt = permissionProfile.sandboxMode === 'danger-full-access'
+      ? '<permissions mode="full" sandbox="danger-full-access" approval-policy="never">The user explicitly enabled Full Access. Tools run without the workspace sandbox or approval prompts.</permissions>'
+      : `<permissions mode="${this.state.permissionMode}" sandbox="${permissionProfile.sandboxMode}" approval-policy="${permissionProfile.approvalPolicy}" reviewer="${permissionProfile.approvalsReviewer}">Shell commands run in a network-denied managed sandbox. Use permissions="elevated" with a justification when internet access or work outside the workspace is necessary.</permissions>`;
     const planningModePrompt = planningMode
       ? [
           '<session-mode name="planning">',
@@ -1242,12 +1249,11 @@ export class AgentApp {
 
     this.configPickerResolver = null;
     const changed = applyConfigPickerState(this.store, picker);
-    this.store.setConfigPicker(null);
     if (changed) {
       await this.persistPreferences();
       this.recordTurnContext();
     }
-    this.render();
+    this.store.setConfigPicker(null);
     resolve();
     return true;
   }

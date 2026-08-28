@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 
-import { widthOf } from '@/text';
+import { widthOf, wrapText } from '@/text';
 import { EntryKind, type ApprovalRequest, type ChoiceRequest } from '@/types';
 import { LEFT_MARGIN, panelize, thinPanelize, wrapTextBlock, takeLast } from '../layout';
 import { blankLine, line, span } from '../primitives';
@@ -8,6 +8,25 @@ import { renderHistoryEntry } from './entry';
 import { renderFileChanges } from './tools/shared';
 
 import type { Block, RenderContext } from '../types';
+
+function wrapChoiceDetail(text: string, width: number, style: (text: string) => string) {
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of text.trim().split(/\s+/)) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (widthOf(candidate) <= width) {
+      current = candidate;
+      continue;
+    }
+    if (current) lines.push(current);
+    const wrappedWord = wrapText(word, width);
+    current = wrappedWord.pop() ?? '';
+    lines.push(...wrappedWord);
+  }
+  if (current) lines.push(current);
+  return lines.map(text => line(span(text, style)));
+}
 
 function clipPreviewText(text: string, ctx: RenderContext, maxLines: number) {
   const maxChars = Math.max(2_000, ctx.width * maxLines * 8);
@@ -60,15 +79,27 @@ export function renderChoicePrompt(
     const detailStyle = selected ? chalk.cyanBright : ctx.theme.dimmed;
     const prefix = `${index + 1}. `;
     const label = `${option.label}${' '.repeat(Math.max(0, labelWidth - widthOf(option.label)))}`;
+    const descriptionWidth = Math.max(
+      1,
+      width - 2 - widthOf(prefix) - labelWidth - 2,
+    );
+    const detailLines = option.detail
+      ? wrapChoiceDetail(option.detail, descriptionWidth, detailStyle)
+      : [];
+    const [firstDetail, ...remainingDetails] = detailLines;
+    const continuation = ' '.repeat(2 + widthOf(prefix) + labelWidth + 2);
 
     return {
       selected,
-      row: line(
-        span(selected ? '› ' : '  ', selected ? chalk.cyanBright : ctx.theme.foreground),
-        span(prefix, selectedStyle),
-        span(label, selectedStyle),
-        ...(option.detail ? [span('  '), span(option.detail, detailStyle)] : []),
-      ),
+      rows: [
+        line(
+          span(selected ? '› ' : '  ', selected ? chalk.cyanBright : ctx.theme.foreground),
+          span(prefix, selectedStyle),
+          span(label, selectedStyle),
+          ...(firstDetail ? [span('  '), ...firstDetail.segments] : []),
+        ),
+        ...remainingDetails.map(detail => line(span(continuation), ...detail.segments)),
+      ],
     };
   });
   const panelBackground = ctx.theme.composerBg();
@@ -86,7 +117,7 @@ export function renderChoicePrompt(
     ...options.flatMap(option => {
       // Keep the selected chevron's painted cell inside the panel's right edge.
       const rowWidth = option.selected ? ctx.width + 1 : ctx.width;
-      return panelize([option.row], {
+      return panelize(option.rows, {
         bg: panelBackground,
         width: rowWidth,
       });

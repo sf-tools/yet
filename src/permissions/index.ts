@@ -1,9 +1,40 @@
-import { access } from 'node:fs/promises';
-import { constants } from 'node:fs';
 import { relative, resolve } from 'node:path';
+
+export {
+  SANDBOX_EXEC_PATH,
+  createWorkspaceSandboxProfile,
+  prepareSandboxCommand,
+} from '@/sandbox';
+export type { SandboxMode } from '@/sandbox';
 
 export type PermissionMode = 'ask' | 'auto' | 'full';
 export type ToolPermission = 'workspace' | 'elevated';
+export type ApprovalPolicy = 'untrusted' | 'on-request' | 'never';
+export type ApprovalsReviewer = 'user' | 'auto_review';
+
+export type PermissionProfile = {
+  sandboxMode: import('@/sandbox').SandboxMode;
+  approvalPolicy: ApprovalPolicy;
+  approvalsReviewer: ApprovalsReviewer;
+};
+
+const PERMISSION_PROFILES: Record<PermissionMode, PermissionProfile> = {
+  ask: {
+    sandboxMode: 'workspace-write',
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'user',
+  },
+  auto: {
+    sandboxMode: 'workspace-write',
+    approvalPolicy: 'on-request',
+    approvalsReviewer: 'auto_review',
+  },
+  full: {
+    sandboxMode: 'danger-full-access',
+    approvalPolicy: 'never',
+    approvalsReviewer: 'user',
+  },
+};
 
 export const PERMISSION_OPTIONS = [
   {
@@ -33,9 +64,28 @@ export function formatPermissionMode(mode: PermissionMode) {
   return PERMISSION_OPTIONS.find(option => option.value === mode)?.label ?? mode;
 }
 
+export function resolvePermissionProfile(
+  mode: PermissionMode,
+  options: { readOnly?: boolean } = {},
+): PermissionProfile {
+  const profile = PERMISSION_PROFILES[mode];
+  return {
+    ...profile,
+    ...(options.readOnly ? { sandboxMode: 'read-only' as const } : {}),
+  };
+}
+
 export function isWithinWorkspace(path: string, workspaceRoot: string) {
   const rel = relative(resolve(workspaceRoot), resolve(path));
   return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/'));
+}
+
+const PROTECTED_WORKSPACE_METADATA_NAMES = new Set(['.git', '.agents', '.codex', '.yet']);
+
+export function isProtectedWorkspaceMetadataPath(path: string, workspaceRoot: string) {
+  const rel = relative(resolve(workspaceRoot), resolve(path));
+  if (!rel || rel.startsWith('..')) return false;
+  return PROTECTED_WORKSPACE_METADATA_NAMES.has(rel.split(/[\\/]/, 1)[0]);
 }
 
 const UNSAFE_COMMAND_PATTERNS = [
@@ -60,47 +110,8 @@ export function shouldPromptForTool(options: {
   requested: ToolPermission;
   potentiallyUnsafe?: boolean;
 }) {
-  if (options.mode === 'full') return false;
+  const profile = resolvePermissionProfile(options.mode);
+  if (profile.approvalPolicy === 'never') return false;
   if (options.requested === 'elevated') return true;
-  return options.mode === 'auto' && options.potentiallyUnsafe === true;
-}
-
-export const SANDBOX_EXEC_PATH = '/usr/bin/sandbox-exec';
-
-export async function requireSandboxExec() {
-  try {
-    await access(SANDBOX_EXEC_PATH, constants.X_OK);
-  } catch {
-    throw new Error(
-      'workspace permissions require /usr/bin/sandbox-exec on this platform; choose Full Access explicitly to run without a sandbox',
-    );
-  }
-}
-
-function quoteSandboxPath(path: string) {
-  return path.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
-}
-
-export function createWorkspaceSandboxProfile(
-  workspaceRoot: string,
-  options: { writable?: boolean } = {},
-) {
-  const root = quoteSandboxPath(resolve(workspaceRoot));
-  return [
-    '(version 1)',
-    '(deny default)',
-    '(allow process*)',
-    '(allow signal)',
-    '(allow sysctl-read)',
-    '(allow mach-lookup)',
-    '(allow file-read*)',
-    '(allow file-write* (literal "/dev/null"))',
-    ...(options.writable === false
-      ? []
-      : [
-          `(allow file-write* (subpath "${root}"))`,
-          '(allow file-write* (subpath "/private/tmp"))',
-          '(allow file-write* (subpath "/tmp"))',
-        ]),
-  ].join('\n');
+  return profile.approvalsReviewer === 'auto_review' && options.potentiallyUnsafe === true;
 }

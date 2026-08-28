@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 
 import { APP_RELEASE_DATE_ISO, APP_VERSION } from '@/config';
+import { resolvePermissionProfile } from '@/permissions';
 import type { SlashCommand } from '../types';
 
 function formatRows(rows: Array<[string, string]>) {
@@ -29,6 +30,9 @@ export const statusSlashCommand: SlashCommand = {
       .flatMap(tool => tool.names)
       .join(', ');
     const lineage = context.getSessionLineage();
+    const permissionProfile = resolvePermissionProfile(state.permissionMode, {
+      readOnly: state.planningMode,
+    });
     const rows: Array<[string, string]> = [
       ['app', 'Yet'],
       ['version', APP_VERSION],
@@ -41,6 +45,9 @@ export const statusSlashCommand: SlashCommand = {
       ['effort', state.thinkingMode],
       ['fast', state.fastModeEnabled ? 'on' : 'off'],
       ['permissions', state.permissionMode],
+      ['sandbox', permissionProfile.sandboxMode],
+      ['approval policy', permissionProfile.approvalPolicy],
+      ['reviewer', permissionProfile.approvalsReviewer],
       ['planning', state.planningMode ? 'on' : 'off'],
       ['auto compact', state.autoCompactEnabled ? 'on' : 'off'],
       ['show thinking', state.showThinking ? 'on' : 'off'],

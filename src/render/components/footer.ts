@@ -196,11 +196,9 @@ export function renderFooter(state: AgentState, ctx: RenderContext): Block {
   const autoCompact = state.autoCompactEnabled ? '' : 'auto-compact off';
   const footerPrefix = [
     span(LEFT_MARGIN),
-    ...(state.permissionMode === 'full'
-      ? [span('! FULL ACCESS', chalk.bgRedBright.black.bold), span(' ')]
-      : state.permissionMode === 'auto'
-        ? [span('auto approvals', chalk.yellow), span(' · ', ctx.theme.subtle)]
-        : []),
+    ...(state.permissionMode === 'auto'
+      ? [span('auto approvals', chalk.yellow), span(' · ', ctx.theme.subtle)]
+      : []),
   ];
   const statsLine = buildStatsLine(state, ctx, footerPrefix, cost, autoCompact);
   const modeLine = buildModeLine(state, footerPrefix, statsLine);

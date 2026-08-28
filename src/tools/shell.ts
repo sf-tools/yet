@@ -1,6 +1,6 @@
 import { plain } from '@/text';
 import { resolve } from 'node:path';
-import { isPotentiallyUnsafeCommand } from '@/permissions';
+import { isPotentiallyUnsafeCommand, resolvePermissionProfile } from '@/permissions';
 import {
   asObject,
   assertOnlyArguments,
@@ -86,8 +86,11 @@ export function createShellTool(options: ToolFactoryOptions) {
         throw new Error('command denied by user');
       }
 
-      const mode = options.getPermissionMode();
-      const sandboxed = options.getPlanningMode() || (mode !== 'full' && requested !== 'elevated');
+      const profile = resolvePermissionProfile(options.getPermissionMode(), {
+        readOnly: options.getPlanningMode(),
+      });
+      const sandboxMode =
+        requested === 'elevated' ? 'danger-full-access' : profile.sandboxMode;
       const cwd =
         typeof object.cwd === 'string' && object.cwd.trim()
           ? resolve(options.workspaceRoot, object.cwd)
@@ -101,8 +104,7 @@ export function createShellTool(options: ToolFactoryOptions) {
         const { output, exitCode } = await options.runUserShell(command, {
           workspaceRoot: options.workspaceRoot,
           cwd,
-          sandboxed,
-          writable: !options.getPlanningMode(),
+          sandboxMode,
           timeoutMs,
         });
         const trimmed = plain(output).trimEnd();
