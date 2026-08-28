@@ -135,6 +135,13 @@ function commandActivityEnd(entries: HistoryEntry[], start: number) {
   return end;
 }
 
+function startsNewToolCell(entries: HistoryEntry[], index: number) {
+  if (index <= 0) return false;
+  const current = entries[index];
+  const previous = entries[index - 1];
+  return current?.type === 'tool' && previous?.type === 'tool' && !isCommandHistoryEntry(previous);
+}
+
 function estimateTokenCount(text: string) {
   return Math.max(0, Math.ceil(Array.from(text).length / 4));
 }
@@ -389,6 +396,9 @@ export class AgentApp {
     while (this.committedHistoryCount < this.state.historyEntries.length) {
       const index = this.committedHistoryCount;
       const entry = this.state.historyEntries[index];
+      if (startsNewToolCell(this.state.historyEntries, index) && lines.at(-1) !== '') {
+        lines.push('');
+      }
       if (isCommandHistoryEntry(entry)) {
         const end = commandActivityEnd(this.state.historyEntries, index);
         const commands = this.state.historyEntries.slice(index, end) as ToolHistoryEntry[];
@@ -421,6 +431,9 @@ export class AgentApp {
     const pendingHistory: ReturnType<typeof renderHistoryEntry> = [];
     for (let index = this.committedHistoryCount; index < this.state.historyEntries.length;) {
       const entry = this.state.historyEntries[index];
+      if (startsNewToolCell(this.state.historyEntries, index)) {
+        pendingHistory.push(blankLine());
+      }
       if (isCommandHistoryEntry(entry)) {
         const end = commandActivityEnd(this.state.historyEntries, index);
         pendingHistory.push(
@@ -492,7 +505,7 @@ export class AgentApp {
           this.state.selectedSuggestion,
           ctx,
           this.isInlineResumePickerOpen()
-            ? `tab ${this.resumeSessionScope === 'current' ? 'all sessions' : 'current workspace'}`
+            ? `${this.resumeSessionScope === 'current' ? 'Current workspace' : 'All sessions'} · tab: ${this.resumeSessionScope === 'current' ? 'all sessions' : 'current workspace'}`
             : undefined,
         );
     const footer = choicePrompt || configPicker || statusPanel || textPrompt || suggestionLines.length > 0
@@ -2530,7 +2543,6 @@ export class AgentApp {
         fastModeEnabled: this.state.fastModeEnabled,
         messages: runtimeMessages,
         tools: this.getActiveTools(),
-        maxSteps: 20,
         signal: abortController.signal,
         takeSteers: signal => this.consumePendingSteers(signal),
         onEvent: async event => {

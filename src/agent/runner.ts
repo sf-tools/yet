@@ -39,7 +39,6 @@ export type RunAgentLoopOptions = {
   fastModeEnabled?: boolean;
   messages: AgentMessage[];
   tools: ToolRegistry;
-  maxSteps?: number;
   signal?: AbortSignal;
   onEvent?: (event: AgentLoopEvent) => void | Promise<void>;
   takeSteers?: (signal?: AbortSignal) => Promise<AgentMessage[]>;
@@ -58,7 +57,6 @@ function toolOutput(value: unknown) {
 }
 
 export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentLoopResult> {
-  const maxSteps = Math.max(1, Math.min(options.maxSteps ?? 20, 20));
   let previousResponseId: string | undefined;
   let pendingOutputs: ProviderToolOutput[] | undefined;
   let continuationMessages: AgentChatMessage[] | undefined;
@@ -82,7 +80,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
     );
   };
 
-  for (let stepIndex = 0; stepIndex < maxSteps; stepIndex += 1) {
+  while (true) {
     options.signal?.throwIfAborted();
     const step = await streamOpenAIResponse({
       model: options.model,
@@ -174,6 +172,4 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
 
     continuationMessages = await takeSteers();
   }
-
-  throw new Error(`agent loop exceeded its ${maxSteps}-step limit`);
 }

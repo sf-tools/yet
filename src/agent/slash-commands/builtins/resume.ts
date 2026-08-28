@@ -3,6 +3,7 @@ import {
   resolveYetSessionReference,
   type YetSessionListEntry,
 } from '@/agent/session-storage';
+import { truncateToWidth } from '@/text';
 import type { SlashCommand, SlashCommandArgumentSuggestion } from '../types';
 
 function formatRelativeAge(isoTime: string) {
@@ -34,9 +35,9 @@ function createSessionSuggestion(
 ): SlashCommandArgumentSuggestion & { value: string } {
   return {
     value: session.sessionId,
-    label: normalizeText(session.title, 'Untitled thread'),
+    label: truncateToWidth(normalizeText(session.title, 'Untitled thread'), 28),
     suffix: ` ${formatRelativeAge(session.savedAt)}`,
-    detail: `${session.sessionId.slice(0, 8)} · ${normalizeText(session.preview, 'No messages yet')}`,
+    detail: truncateToWidth(normalizeText(session.preview, 'No messages yet'), 48),
   };
 }
 

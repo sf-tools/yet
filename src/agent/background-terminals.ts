@@ -165,6 +165,11 @@ export class BackgroundTerminalManager {
         FORCE_COLOR: process.env.FORCE_COLOR || '1',
         CLICOLOR: process.env.CLICOLOR || '1',
         CLICOLOR_FORCE: process.env.CLICOLOR_FORCE || '1',
+        PAGER: 'cat',
+        GIT_PAGER: 'cat',
+        GH_PAGER: 'cat',
+        SYSTEMD_PAGER: 'cat',
+        MANPAGER: 'cat',
       },
     });
     const entry: TerminalEntry = {

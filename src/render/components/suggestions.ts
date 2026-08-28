@@ -224,7 +224,9 @@ export function renderSuggestions(
     line(
       span(`${margin}  `),
       span(
-        `(${Math.min(selectedSuggestion + 1, suggestions.length)}/${suggestions.length})${footerHint ? ` · ${footerHint}` : ''}`,
+        footerHint
+          ? `${Math.min(selectedSuggestion + 1, suggestions.length)} of ${suggestions.length} · ${footerHint}`
+          : `(${Math.min(selectedSuggestion + 1, suggestions.length)}/${suggestions.length})`,
         ctx.theme.dimmed,
       ),
     ),
