@@ -193,6 +193,7 @@ export class AgentApp {
     assistant: string;
     content: ReturnType<typeof renderTranscriptContent>;
   } | null = null;
+  private backgroundWaitToolCallId: string | null = null;
   private readonly sessionFileBaselines = new Map<string, string | null>();
   private readonly backgroundTerminals = new BackgroundTerminalManager(() => this.scheduleRender());
 
@@ -2118,11 +2119,24 @@ export class AgentApp {
               this.scheduleRender();
               break;
             case 'tool-call': {
+              const inputRecord = event.call.input &&
+                typeof event.call.input === 'object' &&
+                !Array.isArray(event.call.input)
+                ? event.call.input as Record<string, unknown>
+                : null;
+              const isBackgroundWait = event.call.name === 'write_stdin' &&
+                inputRecord !== null &&
+                (typeof inputRecord.chars !== 'string' || inputRecord.chars.length === 0);
+              const title = this.toolCallTitle(event.call.name, event.call.input);
+              if (isBackgroundWait) {
+                this.backgroundWaitToolCallId = event.call.id;
+                this.store.setBackgroundWaitCommand(title ?? 'background terminal');
+              }
               const part = {
                 toolCallId: event.call.id,
                 toolName: event.call.name,
                 input: event.call.input,
-                title: this.toolCallTitle(event.call.name, event.call.input),
+                title,
               };
               const entry = createPendingToolEntry(part);
               this.store.upsertToolEntry(entry);
@@ -2144,6 +2158,10 @@ export class AgentApp {
               };
               const entry = createCompletedToolEntry(part);
               this.store.upsertToolEntry(entry);
+              if (this.backgroundWaitToolCallId === event.call.id) {
+                this.backgroundWaitToolCallId = null;
+                this.store.setBackgroundWaitCommand(null);
+              }
               this.foldBackgroundInteractionIntoCommand(entry);
               this.recordSessionEvent({
                 type: 'tool_result',
@@ -2162,6 +2180,10 @@ export class AgentApp {
                 error: event.error,
               });
               this.store.upsertToolEntry(entry);
+              if (this.backgroundWaitToolCallId === event.call.id) {
+                this.backgroundWaitToolCallId = null;
+                this.store.setBackgroundWaitCommand(null);
+              }
               this.recordSessionEvent({
                 type: 'tool_result',
                 payload: { entry, message: event.message },

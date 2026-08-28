@@ -70,12 +70,13 @@ export function renderStatusIndicator(
   if (!state.busy || state.pendingApproval || state.pendingChoice || state.configPicker) return [];
 
   const elapsed = formatElapsedCompact(elapsedMs / 1_000);
+  const waiting = Boolean(state.backgroundWaitCommand);
   return [
     line(
       span(LEFT_MARGIN),
       ...shimmerSegments('•', now),
       span(' '),
-      ...shimmerSegments('Working', now),
+      ...shimmerSegments(waiting ? 'Waiting for background terminal' : 'Working', now),
       span(` (${elapsed} • esc to interrupt)`, chalk.dim),
       ...(backgroundTerminalCount > 0
         ? [
@@ -87,5 +88,14 @@ export function renderStatusIndicator(
           ]
         : []),
     ),
+    ...(waiting && state.backgroundWaitCommand
+      ? [
+          line(
+            span(LEFT_MARGIN),
+            span('  ↳ ', chalk.dim),
+            span(state.backgroundWaitCommand, chalk.dim),
+          ),
+        ]
+      : []),
   ];
 }

@@ -11,6 +11,7 @@ export const createInitialState = (): AgentState => ({
   cursor: 0,
   busy: false,
   busyStatusText: null,
+  backgroundWaitCommand: null,
   closed: false,
   liveAssistantText: '',
   liveReasoningText: '',

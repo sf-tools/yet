@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentUsage } from './messages';
 import {
   COMPACTION_PROMPT,
+  COMPACTION_SUMMARY_PREFIX,
   COMPACTION_RECENT_MESSAGE_COUNT,
   MODEL,
   type ThinkingMode,
@@ -45,6 +46,30 @@ function resolveTailCount(messages: AgentMessage[], recentMessageCount: number, 
   return Math.min(recentMessageCount, Math.max(0, messages.length - 1));
 }
 
+function messageTokenCount(message: AgentMessage) {
+  try {
+    return Math.max(1, Math.ceil(JSON.stringify('content' in message ? message.content : message).length / 4));
+  } catch {
+    return 1;
+  }
+}
+
+function retainedUserMessages(messages: AgentMessage[], maxTokens = 20_000) {
+  const selected: AgentMessage[] = [];
+  let remaining = maxTokens;
+  for (const message of messages.slice().reverse()) {
+    if (message.role !== 'user') continue;
+    if (typeof message.content === 'string' && message.content.startsWith(COMPACTION_SUMMARY_PREFIX))
+      continue;
+    const tokens = messageTokenCount(message);
+    if (tokens > remaining) continue;
+    selected.push(message);
+    remaining -= tokens;
+    if (remaining <= 0) break;
+  }
+  return selected.reverse();
+}
+
 export function canCompactMessages(
   messages: AgentMessage[],
   recentMessageCount = COMPACTION_RECENT_MESSAGE_COUNT,
@@ -68,12 +93,7 @@ export async function compactMessages(
   const systemMessages = getSystemMessages(messages);
   const conversationMessages = getConversationMessages(messages);
   const tailCount = resolveTailCount(conversationMessages, recentMessageCount, force);
-  const tail = conversationMessages.slice(-tailCount);
-  const messagesToSummarize = conversationMessages.slice(
-    0,
-    Math.max(0, conversationMessages.length - tail.length),
-  );
-  if (messagesToSummarize.length === 0)
+  if (conversationMessages.length <= tailCount)
     throw new Error('not enough conversation history to compact');
 
   const result = await generateOpenAIText({
@@ -81,16 +101,15 @@ export async function compactMessages(
     thinkingMode,
     fastModeEnabled,
     messages: [
-      ...systemMessages,
-      ...messagesToSummarize,
+      ...messages,
       { role: 'user', content: COMPACTION_PROMPT },
     ],
   });
   const summary = extractSummary(result.text);
   const compactedMessages: AgentMessage[] = [
     ...systemMessages,
-    { role: 'assistant', content: `<summary>\n${summary}\n</summary>` },
-    ...tail,
+    ...retainedUserMessages(conversationMessages),
+    { role: 'user', content: `${COMPACTION_SUMMARY_PREFIX}\n${summary}` },
   ];
 
   return {

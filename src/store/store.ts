@@ -112,12 +112,20 @@ function buildAgentStore(initialState: AgentState) {
 
     setBusy(busy: boolean) {
       state.busy = busy;
-      if (!busy) state.busyStatusText = null;
+      if (!busy) {
+        state.busyStatusText = null;
+        state.backgroundWaitCommand = null;
+      }
       return state;
     },
 
     setBusyStatusText(busyStatusText: string | null) {
       state.busyStatusText = busyStatusText;
+      return state;
+    },
+
+    setBackgroundWaitCommand(backgroundWaitCommand: string | null) {
+      state.backgroundWaitCommand = backgroundWaitCommand;
       return state;
     },
 

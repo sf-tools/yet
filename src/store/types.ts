@@ -35,6 +35,7 @@ export type AgentState = {
   cursor: number;
   busy: boolean;
   busyStatusText: string | null;
+  backgroundWaitCommand: string | null;
   closed: boolean;
   liveAssistantText: string;
   liveReasoningText: string;

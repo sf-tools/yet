@@ -39,4 +39,9 @@ export {
   saveYetPreferences,
 } from './preferences';
 export type { YetPreferences } from './preferences';
-export { COMPACTION_PROMPT, createInitialMessages, SYSTEM_PROMPT } from './prompt';
+export {
+  COMPACTION_PROMPT,
+  COMPACTION_SUMMARY_PREFIX,
+  createInitialMessages,
+  SYSTEM_PROMPT,
+} from './prompt';

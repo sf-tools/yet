@@ -332,35 +332,10 @@ function renderBackgroundProcessesEntry(
 }
 
 function renderCompactedEntry(
-  entry: Extract<HistoryEntry, { type: 'compacted' }>,
+  _entry: Extract<HistoryEntry, { type: 'compacted' }>,
   ctx: RenderContext,
 ): Block {
-  const width = Math.max(1, ctx.width - 4);
-  const summaryLines = entry.summary
-    .split('\n')
-    .slice(0, 10)
-    .flatMap(text => wrapTextBlock(text, width, ctx.theme.dimmed));
-
-  return thinPanelize(
-    [
-      line(
-        span('Compacted', chalk.yellow),
-        span(' · ', ctx.theme.subtle),
-        span(
-          `${entry.previousMessageCount} → ${entry.nextMessageCount} messages`,
-          ctx.theme.dimmed,
-        ),
-        span(' · ', ctx.theme.subtle),
-        span(entry.automatic ? 'auto' : 'manual', ctx.theme.dimmed),
-      ),
-      blankLine(),
-      ...summaryLines,
-    ],
-    {
-      bg: ctx.theme.panelBg(),
-      width: ctx.width,
-    },
-  );
+  return [line(span(LEFT_MARGIN), span('• ', ctx.theme.dimmed), span('Context compacted', chalk.bold))];
 }
 
 export function renderHistoryEntry(

@@ -188,16 +188,17 @@ function formatLineNumber(lineNum: number | undefined, width: number) {
 export function renderFileChanges(
   fileChanges: FileChange[],
   ctx: RenderContext,
-  options: { maxLinesPerFile?: number } = {},
+  options: { maxLinesPerFile?: number; showFileHeaders?: boolean } = {},
 ): Block {
   const block: Block = [];
   const maxLinesPerFile = options.maxLinesPerFile ?? Math.max(8, Math.min(24, ctx.height - 16));
+  const showFileHeaders = options.showFileHeaders ?? true;
 
   fileChanges.forEach((fileChange, index) => {
-    if (index > 0) block.push(blankLine());
+    if (index > 0 && showFileHeaders) block.push(blankLine());
 
     const statText = formatDiffStat(fileChange.stats);
-    block.push(
+    if (showFileHeaders) block.push(
       line(
         span('  ', ctx.theme.subtle),
         span(fileChange.path, ctx.theme.foreground),
@@ -243,8 +244,10 @@ export function renderFileChanges(
         continue;
       }
 
-      const oldLine = formatLineNumber(diffLine.oldLineNum, width);
-      const newLine = formatLineNumber(diffLine.newLineNum, width);
+      const renderedLineNumber = formatLineNumber(
+        diffLine.type === 'remove' ? diffLine.oldLineNum : diffLine.newLineNum,
+        width,
+      );
       const prefix = diffLine.type === 'add' ? '+' : diffLine.type === 'remove' ? '-' : ' ';
       const style =
         diffLine.type === 'add'
@@ -262,7 +265,7 @@ export function renderFileChanges(
       block.push(
         line(
           span('  ', ctx.theme.subtle),
-          span(`${oldLine} ${newLine} `, ctx.theme.subtle),
+          span(`${renderedLineNumber} `, ctx.theme.subtle),
           span(prefix, style),
           ...content,
         ),

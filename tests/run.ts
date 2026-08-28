@@ -77,6 +77,7 @@ import {
 } from '@/agent/config-settings';
 import { renderConfigPicker } from '@/render/components/config-picker';
 import { renderHistoryEntry } from '@/render/components/entry';
+import { renderStatusIndicator } from '@/render/components/status-indicator';
 import { renderCommandActivity } from '@/render/components/tools/command-activity';
 import { renderTranscriptOverlay } from '@/render/components/transcript-overlay';
 import { renderMarkdown } from '@/render/markdown';
@@ -656,6 +657,126 @@ equal(
   ' • Ran 2 commands · ctrl + t to view transcript',
   'completed command groups collapse to the Codex transcript summary',
 );
+const renderedExploration = serializeBlock(
+  renderCommandActivity(
+    [
+      {
+        type: 'tool',
+        toolCallId: 'search-1',
+        toolName: 'exec_command',
+        input: { cmd: "rg -n 'update_plan' src" },
+        output: JSON.stringify({ output: 'src/tools/index.ts:1', exit_code: 0 }),
+        status: 'completed',
+      },
+      {
+        type: 'tool',
+        toolCallId: 'read-1',
+        toolName: 'exec_command',
+        input: { cmd: "sed -n '1,120p' src/tools/index.ts" },
+        output: JSON.stringify({ output: 'source', exit_code: 0 }),
+        status: 'completed',
+      },
+    ],
+    renderContext,
+  ),
+).join('\n');
+check(
+  renderedExploration.includes('• Explored') &&
+    renderedExploration.includes('Search update_plan in src') &&
+    renderedExploration.includes('Read src/tools/index.ts'),
+  'read and search commands collapse into the Codex Explored cell',
+);
+const renderedSingleCommand = serializeBlock(
+  renderCommandActivity(
+    [{
+      type: 'tool',
+      toolCallId: 'single-1',
+      toolName: 'exec_command',
+      input: { cmd: 'npm test' },
+      output: JSON.stringify({ output: 'one\ntwo\nthree\nfour\nfive\nsix', exit_code: 0 }),
+      status: 'completed',
+    }],
+    renderContext,
+  ),
+).join('\n');
+check(
+  renderedSingleCommand.includes('• Ran npm test') &&
+    renderedSingleCommand.includes('… +2 lines (ctrl + t to view transcript)') &&
+    renderedSingleCommand.endsWith('    six'),
+  'one command uses the Codex expanded head-tail output cell',
+);
+const renderedPlan = serializeBlock(
+  renderHistoryEntry(
+    {
+      type: 'tool',
+      toolCallId: 'plan-1',
+      toolName: 'update_plan',
+      input: {
+        explanation: 'Port the reference behavior.',
+        plan: [
+          { step: 'Inspect Codex', status: 'completed' },
+          { step: 'Port the renderer', status: 'in_progress' },
+          { step: 'Validate in a PTY', status: 'pending' },
+        ],
+      },
+      output: 'Plan updated',
+      status: 'completed',
+    },
+    renderContext,
+  ),
+).join('\n');
+check(
+  renderedPlan.includes('• Updated Plan') &&
+    renderedPlan.includes('✔ Inspect Codex') &&
+    renderedPlan.includes('□ Port the renderer'),
+  'update_plan renders the Codex plan checklist cell',
+);
+equal(
+  serializeBlock(
+    renderHistoryEntry(
+      { type: 'compacted', summary: 'hidden', previousMessageCount: 20, nextMessageCount: 4, automatic: true },
+      renderContext,
+    ),
+  ).join('\n'),
+  ' • Context compacted',
+  'compaction renders the compact Codex history marker',
+);
+const waitingState = createAgentStore().getState();
+waitingState.busy = true;
+waitingState.backgroundWaitCommand = 'npm test';
+const renderedWaiting = serializeBlock(
+  renderStatusIndicator(waitingState, 460_000, 1, Date.now()),
+).join('\n');
+check(
+  renderedWaiting.includes('Waiting for background terminal (7m 40s • esc to interrupt)') &&
+    renderedWaiting.includes('1 background terminal running · /ps to view · /stop to close') &&
+    renderedWaiting.includes('↳ npm test'),
+  'background polling uses the Codex waiting header, process count, and command detail',
+);
+const renderedPatch = serializeBlock(
+  renderHistoryEntry(
+    {
+      type: 'tool',
+      toolCallId: 'patch-1',
+      toolName: 'apply_patch',
+      input: {},
+      output: 'done',
+      status: 'completed',
+      fileChanges: [{
+        path: 'src/example.ts',
+        diff: '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -10,1 +10,2 @@\n old\n+new',
+        stats: { added: 1, modified: 0, removed: 0 },
+        changeKind: 'modified',
+        hasChanges: true,
+      }],
+    },
+    renderContext,
+  ),
+).join('\n');
+check(
+  renderedPatch.includes('• Edited src/example.ts (+1 -0)') && renderedPatch.includes('11 +new'),
+  'apply_patch renders the Codex edit summary and numbered diff gutter',
+);
 const renderedWait = serializeBlock(
   renderCommandActivity(
     [
@@ -813,8 +934,25 @@ try {
   });
   deepEqual(
     registry.list().map(tool => tool.name),
-    ['exec_command', 'write_stdin', 'apply_patch'],
+    ['exec_command', 'write_stdin', 'update_plan', 'apply_patch'],
     'default tool list is exact',
+  );
+  equal(
+    (await registry.execute('update_plan', {
+      plan: [{ step: 'Run the tests', status: 'in_progress' }],
+    })).output,
+    'Plan updated',
+    'update_plan accepts a valid checklist',
+  );
+  await rejects(
+    registry.execute('update_plan', {
+      plan: [
+        { step: 'First', status: 'in_progress' },
+        { step: 'Second', status: 'in_progress' },
+      ],
+    }),
+    /at most one/,
+    'update_plan rejects multiple in-progress steps',
   );
 
   const patch = ['--- /dev/null', '+++ b/hello.txt', '@@ -0,0 +1,1 @@', '+hello from yet'].join('\n');
