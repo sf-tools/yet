@@ -12,6 +12,7 @@ export type ComposerState = {
   cursor: number;
   scrollOffset?: number;
   slashCommandLength?: number;
+  skillNames?: string[];
   showCapabilitiesHint?: boolean;
 };
 
@@ -19,7 +20,8 @@ function adjustComposerState(state: ComposerState) {
   const shellMode = state.inputChars[0] === '!';
   const slashMode = state.inputChars[0] === '/';
   const mentionMode = state.inputChars[0] === '@';
-  const hiddenPrefix = shellMode || slashMode || mentionMode ? 1 : 0;
+  const skillMode = state.inputChars[0] === '$';
+  const hiddenPrefix = shellMode || slashMode || mentionMode || skillMode ? 1 : 0;
 
   if (!hiddenPrefix) return { hiddenPrefix, inputState: state };
 
@@ -169,12 +171,14 @@ function renderComposerPrompt(
   shellMode: boolean,
   slashMode: boolean,
   mentionMode: boolean,
+  skillMode: boolean,
   validSlashCommand: boolean,
 ): Segment {
   if (state.inputChars.length === 0) return span('→', ctx.theme.dimmed);
   if (shellMode) return span('!', chalk.yellow);
   if (slashMode) return span('/', validSlashCommand ? chalk.cyanBright : ctx.theme.foreground);
   if (mentionMode) return span('@', chalk.magentaBright);
+  if (skillMode) return span('$', chalk.cyanBright);
   return span('→', ctx.theme.foreground);
 }
 
@@ -216,11 +220,12 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
   const shellMode = state.inputChars[0] === '!';
   const slashMode = state.inputChars[0] === '/';
   const mentionMode = state.inputChars[0] === '@';
-  const compactPrefixMode = slashMode || mentionMode;
+  const skillMode = state.inputChars[0] === '$';
+  const compactPrefixMode = slashMode || mentionMode || skillMode;
   const validSlashCommand = slashMode && (state.slashCommandLength ?? 0) > 0;
-  const capabilitiesHint = state.showCapabilitiesHint ? '/ commands · @ files · ! shell' : '';
+  const capabilitiesHint = state.showCapabilitiesHint ? '/ commands · $ skills · @ files · ! shell' : '';
   const capabilitiesWidth = widthOf(capabilitiesHint);
-  const prompt = renderComposerPrompt(state, ctx, shellMode, slashMode, mentionMode, validSlashCommand);
+  const prompt = renderComposerPrompt(state, ctx, shellMode, slashMode, mentionMode, skillMode, validSlashCommand);
   const promptWidth = widthOf(prompt.text);
   const hintWidth = capabilitiesHint ? capabilitiesWidth + 1 : 0;
   const placeholderFill = (occupiedWidth: number) => repeat(' ', Math.max(0, contentWidth + 1 - occupiedWidth - hintWidth));
@@ -289,18 +294,42 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
   }
 
   const { inputState } = adjustComposerState(state);
-  const mentionStyleAt = (index: number, char: string) => {
+  const skillStyleIndices = new Set<number>();
+  const inputText = inputState.inputChars.join('');
+  for (const skillName of state.skillNames ?? []) {
+    const targets = [`$${skillName}`];
+    if (skillMode && inputText.startsWith(skillName)) {
+      for (let index = 0; index < Array.from(skillName).length; index += 1) skillStyleIndices.add(index);
+    }
+    for (const target of targets) {
+      let fromIndex = 0;
+      while (fromIndex < inputText.length) {
+        const matchIndex = inputText.indexOf(target, fromIndex);
+        if (matchIndex === -1) break;
+
+        const characterStart = Array.from(inputText.slice(0, matchIndex)).length;
+        const characterLength = Array.from(target).length;
+        for (let index = characterStart; index < characterStart + characterLength; index += 1) skillStyleIndices.add(index);
+        fromIndex = matchIndex + target.length;
+      }
+    }
+  }
+
+  const tokenStyleAt = (index: number, char: string) => {
+    if (skillStyleIndices.has(index)) return chalk.cyanBright;
     if (/\s/.test(char)) return undefined;
 
     let tokenStart = index;
     while (tokenStart > 0 && !/\s/.test(inputState.inputChars[tokenStart - 1])) tokenStart -= 1;
 
-    return (tokenStart === 0 && mentionMode) || inputState.inputChars[tokenStart] === '@' ? chalk.magentaBright : undefined;
+    if ((tokenStart === 0 && mentionMode) || inputState.inputChars[tokenStart] === '@') return chalk.magentaBright;
+    if ((tokenStart === 0 && skillMode) || inputState.inputChars[tokenStart] === '$') return chalk.cyanBright;
+    return undefined;
   };
   const inputLines = renderInputLines(
     inputState,
     contentWidth,
-    slashMode ? index => (index < (state.slashCommandLength ?? 0) ? chalk.cyanBright : undefined) : mentionStyleAt,
+    slashMode ? index => (index < (state.slashCommandLength ?? 0) ? chalk.cyanBright : undefined) : tokenStyleAt,
   );
   const block = inputLines.map((entry, index) =>
     line(

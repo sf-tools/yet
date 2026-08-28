@@ -13,9 +13,16 @@ import {
   type SlashCommandRegistry,
   type SlashCommandSuggestion,
 } from './slash-commands';
+import {
+  acceptSkillSuggestion,
+  currentSkillQuery,
+  listSkillSuggestions,
+  type SkillMetadata,
+  type SkillSuggestion,
+} from './skills';
 import type { AgentStore } from '@/store';
 
-export type ComposerSuggestion = MentionSuggestion | SlashCommandSuggestion;
+export type ComposerSuggestion = MentionSuggestion | SlashCommandSuggestion | SkillSuggestion;
 
 function markSelectedSuggestions(
   suggestions: SlashCommandSuggestion[],
@@ -98,7 +105,7 @@ export function listComposerSuggestions(
   inputChars: string[],
   cursor: number,
   commands: SlashCommandRegistry,
-  options: { currentModel: string; thinkingMode: string },
+  options: { currentModel: string; thinkingMode: string; skills: SkillMetadata[] },
 ): ComposerSuggestion[] {
   const slashQuery = currentSlashCommandQuery(inputChars, cursor);
   if (slashQuery !== null)
@@ -111,6 +118,8 @@ export function listComposerSuggestions(
 
   if (currentMentionQuery(inputChars, cursor) !== null)
     return listMentionSuggestions(inputChars, cursor);
+  if (currentSkillQuery(inputChars, cursor) !== null)
+    return listSkillSuggestions(inputChars, cursor, options.skills);
   return [];
 }
 
@@ -122,5 +131,6 @@ export function acceptComposerSuggestion(store: AgentStore, suggestions: Compose
     if (suggestion.disabled) return false;
     return acceptSlashCommandSuggestion(store, suggestion);
   }
-  return acceptMentionSuggestion(store, suggestion);
+  if (suggestion.kind === 'mention') return acceptMentionSuggestion(store, suggestion);
+  return acceptSkillSuggestion(store, suggestion);
 }

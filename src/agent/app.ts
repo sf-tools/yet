@@ -8,6 +8,13 @@ import { readFile } from 'node:fs/promises';
 import { resolveInputBinding } from './keybinds';
 import { takeOverEarlyStdin } from './early-stdin';
 import { startMentionIndex } from './mention-index';
+import {
+  discoverSkills,
+  loadSkillInstructionMessages,
+  renderSkillsCatalog,
+  selectedSkills,
+  type SkillMetadata,
+} from './skills';
 import { PromptHistoryStore } from './prompt-history';
 import { blankLine, vstack } from '@/render/primitives';
 import { pickSpinnerVerb } from '@/render/spinner-verbs';
@@ -211,6 +218,7 @@ export class AgentApp {
   private bracketedPasteActive = false;
   private bracketedPasteBuffer = '';
   private stdinBuffer = '';
+  private skills: SkillMetadata[] = [];
 
   private clearTransientBlock() {
     if (this.transientLineCount <= 0) {
@@ -365,6 +373,7 @@ export class AgentApp {
         pasteRanges: this.state.pasteRanges,
         cursor: this.state.cursor,
         slashCommandLength: this.getSlashCommandLength(),
+        skillNames: this.skills.map(skill => skill.name),
         showCapabilitiesHint: this.state.historyEntries.length === 0,
       },
       ctx,
@@ -422,6 +431,7 @@ export class AgentApp {
   async start() {
     await this.theme.sync();
     startMentionIndex(process.cwd());
+    this.skills = discoverSkills();
 
     if (!this.bootFromSnapshot) {
       const preferences = await loadYetPreferences();
@@ -516,6 +526,7 @@ export class AgentApp {
     return listComposerSuggestions(this.state.inputChars, this.state.cursor, this.slashCommands, {
       currentModel: this.state.currentModel,
       thinkingMode: this.state.thinkingMode,
+      skills: this.skills,
     });
   }
 
@@ -846,7 +857,10 @@ export class AgentApp {
           '</session-mode>',
         ].join('\n')
       : '';
-    const runtimePrompt = [permissionPrompt, planningModePrompt].filter(Boolean).join('\n\n');
+    const skillsPrompt = renderSkillsCatalog(this.skills);
+    const runtimePrompt = [permissionPrompt, planningModePrompt, skillsPrompt]
+      .filter(Boolean)
+      .join('\n\n');
 
     const [first, ...rest] = messages;
     if (first?.role === 'system' && typeof first.content === 'string') {
@@ -1294,8 +1308,13 @@ export class AgentApp {
 
       const userContent = await this.buildUserMessageContent(trimmed);
       const userMessage = { role: 'user' as const, content: userContent };
-      this.store.pushMessage(userMessage);
-      this.recordSessionEvent({ type: 'user_message', payload: { messages: [userMessage] } });
+      const invokedSkills = selectedSkills(trimmed, this.skills);
+      const skillInstructions = await loadSkillInstructionMessages(invokedSkills);
+      for (const warning of skillInstructions.warnings) this.persistEntry(EntryKind.Error, warning);
+
+      const turnMessages = [...skillInstructions.messages, userMessage];
+      this.store.pushMessages(turnMessages);
+      this.recordSessionEvent({ type: 'user_message', payload: { messages: turnMessages } });
 
       const runtimeMessages = this.getRuntimeMessages();
       const estimatedPromptTokens = estimateMessageTokens(runtimeMessages);

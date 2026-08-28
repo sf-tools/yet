@@ -9,7 +9,15 @@ import { createToolRegistry } from '@/tools';
 import { runUserShell } from '@/agent/shell';
 import { getEarlyStdinStream } from '@/agent/early-stdin';
 import { getLastAssistantResponse } from '@/agent/messages';
-import { appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  acceptSkillSuggestion,
+  discoverSkills,
+  listSkillSuggestions,
+  loadSkillInstructionMessages,
+  renderSkillsCatalog,
+  selectedSkills,
+} from '@/agent/skills';
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { OPENAI_MODEL_OPTIONS, getOpenAIProviderModelId } from '@/config';
 import { builtinSlashCommands, type SlashCommandContext } from '@/agent/slash-commands';
@@ -82,6 +90,79 @@ deepEqual(
   'supported model list is exact',
 );
 equal(getOpenAIProviderModelId('gpt-daybreak-blue-latest'), 'daybreak-blue-latest', 'daybreak model maps to its provider ID');
+
+const skillsHome = await mkdtemp(join(tmpdir(), 'yet-skills-'));
+try {
+  const skillDirectory = join(skillsHome, '.system', 'review-changes');
+  await mkdir(join(skillDirectory, 'agents'), { recursive: true });
+  await writeFile(
+    join(skillDirectory, 'SKILL.md'),
+    [
+      '---',
+      'name: Review Changes',
+      'description: Review a code change and report actionable defects.',
+      'metadata:',
+      '  short-description: Find defects',
+      '---',
+      '',
+      '# Review Changes',
+      '',
+      'Inspect the full diff before reporting findings.',
+      '',
+    ].join('\n'),
+  );
+  await writeFile(
+    join(skillDirectory, 'agents', 'openai.yaml'),
+    [
+      'interface:',
+      '  display_name: Review Changes',
+      '  short_description: Find actionable bugs',
+      'policy:',
+      '  allow_implicit_invocation: false',
+      '',
+    ].join('\n'),
+  );
+
+  const skills = discoverSkills(skillsHome);
+  equal(skills.length, 1, 'nested Codex-style skill packages are discovered');
+  equal(skills[0]?.displayName, 'Review Changes', 'skill interface metadata is loaded');
+  equal(skills[0]?.shortDescription, 'Find actionable bugs', 'skill UI description is loaded');
+  equal(skills[0]?.allowImplicitInvocation, false, 'skill invocation policy is loaded');
+
+  const skillSuggestions = listSkillSuggestions(Array.from('$rev'), 4, skills);
+  equal(skillSuggestions[0]?.label, 'Review Changes', '$ suggestions use the skill display name');
+  equal(skillSuggestions[0]?.category, 'Skill', '$ suggestions identify their catalog category');
+  const skillStore = createAgentStore();
+  skillStore.replaceInput('$rev', 4);
+  check(
+    skillSuggestions[0] !== undefined && acceptSkillSuggestion(skillStore, skillSuggestions[0]),
+    'a skill suggestion can be accepted',
+  );
+  equal(
+    skillStore.getState().inputChars.join(''),
+    '$Review Changes ',
+    'accepting a skill inserts its full frontmatter name',
+  );
+
+  const invokedSkills = selectedSkills('Please $Review Changes, then summarize.', skills);
+  equal(invokedSkills[0]?.path, skills[0]?.path, 'skill mentions with spaces select the package');
+  const loadedSkill = await loadSkillInstructionMessages(invokedSkills);
+  const skillInstruction = loadedSkill.messages[0];
+  check(
+    skillInstruction?.role === 'user' &&
+      typeof skillInstruction.content === 'string' &&
+      skillInstruction.content.includes('<name>Review Changes</name>') &&
+      skillInstruction.content.includes('Inspect the full diff'),
+    'selected skills inject the complete SKILL.md as a user instruction',
+  );
+  check(
+    renderSkillsCatalog(skills).includes('Use only when the user explicitly invokes this skill.'),
+    'the model-visible catalog preserves explicit-only skill policy',
+  );
+} finally {
+  await rm(skillsHome, { recursive: true, force: true });
+}
+
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,

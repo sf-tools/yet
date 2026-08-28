@@ -43,7 +43,8 @@
     "markdown-it": "^15.0.0",
     "openai": "^7.5.0",
     "ora": "^9.4.1",
-    "prismjs": "^1.30.0"
+    "prismjs": "^1.30.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/approximate-number": "^2.1.0",
