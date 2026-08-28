@@ -54,22 +54,24 @@ export function renderChoicePrompt(
     (max, option) => Math.max(max, widthOf(option.label)),
     0,
   );
-  const options = request.options.flatMap((option, index) => {
+  const options = request.options.map((option, index) => {
     const selected = index === selectedIndex;
     const selectedStyle = selected ? chalk.cyanBright : ctx.theme.foreground;
     const detailStyle = selected ? chalk.cyanBright : ctx.theme.dimmed;
     const prefix = `${index + 1}. `;
     const label = `${option.label}${' '.repeat(Math.max(0, labelWidth - widthOf(option.label)))}`;
 
-    return [
-      line(
+    return {
+      selected,
+      row: line(
         span(selected ? '› ' : '  ', selected ? chalk.cyanBright : ctx.theme.foreground),
         span(prefix, selectedStyle),
         span(label, selectedStyle),
         ...(option.detail ? [span('  '), span(option.detail, detailStyle)] : []),
       ),
-    ];
+    };
   });
+  const panelBackground = ctx.theme.composerBg();
 
   return [
     ...panelize(
@@ -78,11 +80,18 @@ export function renderChoicePrompt(
         line(span(request.title, chalk.bold)),
         ...detail,
         blankLine(),
-        ...options,
-        blankLine(),
       ],
-      { bg: ctx.theme.composerBg(), width: ctx.width },
+      { bg: panelBackground, width: ctx.width },
     ),
+    ...options.flatMap(option => {
+      // Keep the selected chevron's painted cell inside the panel's right edge.
+      const rowWidth = option.selected ? ctx.width + 1 : ctx.width;
+      return panelize([option.row], {
+        bg: panelBackground,
+        width: rowWidth,
+      });
+    }),
+    ...panelize([blankLine()], { bg: panelBackground, width: ctx.width }),
     line(
       span(`${LEFT_MARGIN} `),
       span('Press enter to confirm or esc to go back', ctx.theme.dimmed),
