@@ -1,4 +1,5 @@
 import { compactSlashCommand } from './compact';
+import { configSlashCommand } from './config';
 import { copySlashCommand } from './copy';
 import { deleteSlashCommand } from './delete';
 import { effortSlashCommand } from './effort';
@@ -19,6 +20,7 @@ export const builtinSlashCommands = [
   effortSlashCommand,
   fastSlashCommand,
   permissionsSlashCommand,
+  configSlashCommand,
   planningSlashCommand,
   compactSlashCommand,
   copySlashCommand,

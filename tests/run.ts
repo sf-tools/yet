@@ -21,6 +21,7 @@ import {
 import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { OPENAI_MODEL_OPTIONS, getOpenAIProviderModelId } from '@/config';
+import { normalizeYetPreferences } from '@/config';
 import { builtinSlashCommands, type SlashCommandContext } from '@/agent/slash-commands';
 import { createWorkspaceSandboxProfile, isPermissionMode, isPotentiallyUnsafeCommand, isWithinWorkspace, shouldPromptForTool } from '@/permissions';
 import {
@@ -51,6 +52,13 @@ import { EntryKind } from '@/types';
 import { readClipboardImage } from '@/agent/clipboard-image';
 import { displayImageTokens } from '@/agent/image-tokens';
 import { resolveInputBinding } from '@/agent/keybinds';
+import {
+  applyConfigPickerState,
+  createConfigPickerState,
+} from '@/agent/config-settings';
+import { renderConfigPicker } from '@/render/components/config-picker';
+import { createRenderContext, serializeBlock } from '@/render';
+import { createTheme } from '@/theme';
 import {
   BLOCK_STREAM_CATCH_UP_AGE_MS,
   BLOCK_STREAM_CATCH_UP_LINES,
@@ -259,10 +267,73 @@ try {
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'fast', 'permissions', 'plan', 'compact', 'copy', 'resume', 'fork', 'btw', 'rename', 'delete', 'exit'],
+  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'compact', 'copy', 'resume', 'fork', 'btw', 'rename', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
+
+let configPickerOpened = false;
+const configCommand = builtinSlashCommands.find(command => command.name === 'config');
+check(configCommand !== undefined, '/config is registered');
+await configCommand.execute(
+  {
+    openConfigPicker: async () => {
+      configPickerOpened = true;
+    },
+  } as unknown as SlashCommandContext,
+  { raw: '/config', invocation: 'config', argsText: '', argv: [] },
+);
+check(configPickerOpened, '/config opens the interactive settings picker');
+
+const configStore = createAgentStore();
+const configPicker = createConfigPickerState(configStore.getState());
+equal(configPicker.items[0]?.enabled, false, 'configuration picker shows the current thinking value');
+equal(configPicker.items[1]?.enabled, true, 'configuration picker shows the current compaction value');
+const renderedConfig = serializeBlock(
+  renderConfigPicker(configPicker, createRenderContext(createTheme(), false, 80, 30)),
+).join('\n');
+configPicker.items[0]!.enabled = true;
+configPicker.items[1]!.enabled = false;
+check(applyConfigPickerState(configStore, configPicker), 'configuration changes are applied');
+equal(configStore.getState().showThinking, true, 'configuration updates thinking visibility');
+equal(configStore.getState().autoCompactEnabled, false, 'configuration updates automatic compaction');
+equal(
+  normalizeYetPreferences({ showThinking: false }).showThinking,
+  false,
+  'thinking visibility is retained by preference normalization',
+);
+check(
+  renderedConfig.includes('Configuration') &&
+    renderedConfig.includes('[ ] Show thinking') &&
+    renderedConfig.includes('Press space to select or enter to save'),
+  'configuration picker uses the experimental-features list style',
+);
+
+const configApp = new AgentApp();
+const configAppInternals = configApp as unknown as {
+  store: ReturnType<typeof createAgentStore>;
+  render(): void;
+  persistPreferences(): Promise<void>;
+  tryAcceptAndSubmitSlashCommandSuggestion(): Promise<boolean>;
+  handleInputBinding(binding: ReturnType<typeof resolveInputBinding>): Promise<void>;
+  activeSubmissionTask: Promise<void> | null;
+};
+configAppInternals.render = () => {};
+configAppInternals.persistPreferences = async () => {};
+configAppInternals.store.replaceInput('/config');
+check(
+  await configAppInternals.tryAcceptAndSubmitSlashCommandSuggestion(),
+  'submitting /config releases the stdin handler while the picker is open',
+);
+check(configAppInternals.store.getState().configPicker !== null, 'configuration picker stays open for input');
+await configAppInternals.handleInputBinding({ type: 'moveSuggestion', delta: 1 });
+equal(configAppInternals.store.getState().configPicker?.selectedIndex, 1, 'arrow keys navigate configuration rows');
+await configAppInternals.handleInputBinding({ type: 'insertText', text: ' ' });
+equal(configAppInternals.store.getState().configPicker?.items[1]?.enabled, false, 'space toggles the selected setting');
+await configAppInternals.handleInputBinding({ type: 'insertText', text: ' ' });
+await configAppInternals.handleInputBinding({ type: 'escape' });
+equal(configAppInternals.store.getState().configPicker, null, 'escape closes the configuration picker');
+await configAppInternals.activeSubmissionTask;
 
 let forkName: string | undefined;
 const forkCommand = builtinSlashCommands.find(command => command.name === 'fork');

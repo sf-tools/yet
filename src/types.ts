@@ -103,6 +103,20 @@ export type ChoiceSelection = ChoiceOption & {
   index: number;
 };
 
+export type ConfigPickerItem = {
+  id: string;
+  label: string;
+  detail: string;
+  enabled: boolean;
+};
+
+export type ConfigPickerState = {
+  title: string;
+  detail: string;
+  items: ConfigPickerItem[];
+  selectedIndex: number;
+};
+
 export type Rgb = {
   r: number;
   g: number;

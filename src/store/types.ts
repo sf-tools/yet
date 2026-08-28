@@ -1,7 +1,13 @@
 import type { AgentMessage } from '@/agent/messages';
 import type { ThinkingMode } from '@/config';
 import type { PermissionMode } from '@/permissions';
-import type { ApprovalRequest, ChoiceRequest, FileChange, HistoryEntry } from '@/types';
+import type {
+  ApprovalRequest,
+  ChoiceRequest,
+  ConfigPickerState,
+  FileChange,
+  HistoryEntry,
+} from '@/types';
 
 export type ComposerPasteRange = {
   start: number;
@@ -49,6 +55,7 @@ export type AgentState = {
   pendingApproval: ApprovalRequest | null;
   pendingChoice: ChoiceRequest | null;
   pendingChoiceIndex: number;
+  configPicker: ConfigPickerState | null;
   footerNotice: string | null;
   sessionFileChanges: FileChange[];
   permissionMode: PermissionMode;

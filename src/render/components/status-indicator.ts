@@ -66,7 +66,7 @@ export function renderStatusIndicator(
   elapsedMs: number,
   now = Date.now(),
 ): Block {
-  if (!state.busy || state.pendingApproval || state.pendingChoice) return [];
+  if (!state.busy || state.pendingApproval || state.pendingChoice || state.configPicker) return [];
 
   const elapsed = formatElapsedCompact(elapsedMs / 1_000);
   return [

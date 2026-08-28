@@ -24,6 +24,7 @@ export type SlashCommandContext = {
   setPlanningMode(enabled: boolean): void;
   enqueueSubmission(text: string, options?: { planningMode?: boolean }): void;
   openCommandArgumentPicker(commandName: string): void;
+  openConfigPicker(): Promise<void>;
   requestChoice(request: ChoiceRequest): Promise<ChoiceSelection | null>;
   showFooterNotice(text: string, durationMs?: number): void;
   getActiveToolSummaries(): Array<{ names: string[]; description: string | null }>;

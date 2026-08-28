@@ -167,6 +167,30 @@ function buildAgentStore(initialState: AgentState) {
       return state;
     },
 
+    setConfigPicker(configPicker: AgentState['configPicker']) {
+      state.configPicker = configPicker;
+      return state;
+    },
+
+    setConfigPickerSelectedIndex(selectedIndex: number) {
+      if (!state.configPicker || state.configPicker.items.length === 0) return state;
+      state.configPicker.selectedIndex = clamp(
+        selectedIndex,
+        0,
+        state.configPicker.items.length - 1,
+      );
+      return state;
+    },
+
+    toggleSelectedConfigPickerItem() {
+      const picker = state.configPicker;
+      if (!picker) return false;
+      const item = picker.items[picker.selectedIndex];
+      if (!item) return false;
+      item.enabled = !item.enabled;
+      return true;
+    },
+
     setFooterNotice(footerNotice: string | null) {
       state.footerNotice = footerNotice;
       return state;

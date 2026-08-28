@@ -85,6 +85,7 @@ function printHelp() {
       ['/model', 'Switch among the supported models'],
       ['/effort', 'Change reasoning effort'],
       ['/permissions', 'Change the active permission mode'],
+      ['/config', 'Configure Yet settings'],
       ['/plan', 'Toggle read-only planning mode or plan one task'],
       ['/compact', 'Compact the current conversation'],
       ['/copy', "Copy the agent's latest response to the clipboard"],

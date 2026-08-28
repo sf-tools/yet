@@ -17,6 +17,7 @@ import { renderHistoryEntry } from '@/render/components/entry';
 import { compactMessages, canCompactMessages } from './compact';
 import { renderSuggestions } from '@/render/components/suggestions';
 import { renderChoicePrompt, renderOutputPreview } from '@/render/components/transcript';
+import { renderConfigPicker } from '@/render/components/config-picker';
 import { renderPendingInput } from '@/render/components/pending-input';
 import { IMAGE_MEDIA_TYPES, parseDroppedImagePaths } from './path-detect';
 import { copyTextToClipboard } from './clipboard-text';
@@ -37,6 +38,7 @@ import {
   createSideConversationState,
   SIDE_DEVELOPER_INSTRUCTIONS,
 } from './side-conversation';
+import { applyConfigPickerState, createConfigPickerState } from './config-settings';
 import { createProvisionalThreadTitle, startBackgroundThreadTitle, type BackgroundThreadTitleRequest } from './thread-title';
 import { normalizePtyOutput, plain, installSegmentContainingPolyfill } from '@/text';
 import { handleAbortKeypress, createAbortController, resetAbortState } from './abort';
@@ -198,6 +200,7 @@ export class AgentApp {
   private preferredComposerColumn: number | null = null;
   private pendingApprovalResolver: ((decision: ApprovalDecision) => void) | null = null;
   private pendingChoiceResolver: ((selection: ChoiceSelection | null) => void) | null = null;
+  private configPickerResolver: (() => void) | null = null;
   private stdin: TtyReadStream = process.stdin;
   private bracketedPasteActive = false;
   private bracketedPasteBuffer = '';
@@ -360,10 +363,15 @@ export class AgentApp {
     const choicePrompt = this.state.pendingChoice
       ? renderChoicePrompt(this.state.pendingChoice, this.state.pendingChoiceIndex, ctx)
       : null;
-    const suggestionLines = choicePrompt
+    const configPicker = this.state.configPicker
+      ? renderConfigPicker(this.state.configPicker, ctx)
+      : null;
+    const suggestionLines = choicePrompt || configPicker
       ? []
       : renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
-    const footer = choicePrompt || suggestionLines.length > 0 ? [] : renderFooter(this.state, ctx);
+    const footer = choicePrompt || configPicker || suggestionLines.length > 0
+      ? []
+      : renderFooter(this.state, ctx);
     const statusIndicator = renderStatusIndicator(this.state, this.busyStartedAt === null ? 0 : Date.now() - this.busyStartedAt);
 
     const topSections = [pendingHistory, preview].filter(section => section.length > 0);
@@ -377,7 +385,7 @@ export class AgentApp {
           blankLine(),
         ]
       : [blankLine()];
-    const composerSurface = choicePrompt ?? composer;
+    const composerSurface = configPicker ?? choicePrompt ?? composer;
     const blocks = body.length > 0
       ? [body, composerLead, composerSurface, suggestionLines, footer]
       : [composerLead, composerSurface, suggestionLines, footer];
@@ -444,6 +452,7 @@ export class AgentApp {
       this.store.setFastModeEnabled(preferences.fastModeEnabled);
       this.store.setPermissionMode(preferences.permissions);
       this.store.setAutoCompactEnabled(preferences.autoCompactEnabled);
+      this.store.setShowThinking(preferences.showThinking);
     }
     if (this.modelOverride) this.store.setCurrentModel(this.modelOverride);
     if (this.thinkingModeOverride) {
@@ -975,42 +984,50 @@ export class AgentApp {
     return true;
   }
 
-  private persistPreferences() {
-    void saveYetPreferences({
-      model: this.state.currentModel,
-      reasoning: this.state.thinkingMode,
-      fastModeEnabled: this.state.fastModeEnabled,
-      permissions: this.state.permissionMode,
-      autoCompactEnabled: this.state.autoCompactEnabled,
-    });
+  private async persistPreferences() {
+    try {
+      await saveYetPreferences({
+        model: this.state.currentModel,
+        reasoning: this.state.thinkingMode,
+        fastModeEnabled: this.state.fastModeEnabled,
+        permissions: this.state.permissionMode,
+        autoCompactEnabled: this.state.autoCompactEnabled,
+        showThinking: this.state.showThinking,
+      });
+    } catch (error) {
+      this.showFooterNotice(
+        `Couldn't save preferences: ${plain(error instanceof Error ? error.message : String(error))}`,
+        5_000,
+      );
+    }
   }
 
   private setCurrentModel(model: string) {
     this.store.setCurrentModel(model);
     if (!getSupportedThinkingModes(model).includes(this.state.thinkingMode)) this.store.setThinkingMode('auto');
     this.store.resetLastUsage();
-    this.persistPreferences();
+    void this.persistPreferences();
     this.recordTurnContext();
     this.render();
   }
 
   private setThinkingMode(thinkingMode: AgentState['thinkingMode']) {
     this.store.setThinkingMode(thinkingMode);
-    this.persistPreferences();
+    void this.persistPreferences();
     this.recordTurnContext();
     this.render();
   }
 
   private setFastModeEnabled(enabled: boolean) {
     this.store.setFastModeEnabled(enabled);
-    this.persistPreferences();
+    void this.persistPreferences();
     this.recordTurnContext();
     this.render();
   }
 
   private setPermissionMode(permissionMode: PermissionMode) {
     this.store.setPermissionMode(permissionMode);
-    this.persistPreferences();
+    void this.persistPreferences();
     this.recordTurnContext();
     this.render();
   }
@@ -1104,7 +1121,7 @@ export class AgentApp {
   private cycleThinkingMode() {
     const next = cycleThinkingMode(this.state.thinkingMode, this.state.currentModel);
     this.store.setThinkingMode(next);
-    this.persistPreferences();
+    void this.persistPreferences();
     this.recordTurnContext();
     this.render();
     return next;
@@ -1203,6 +1220,66 @@ export class AgentApp {
     this.store.setPendingChoice(null);
     this.render();
     resolve(selection);
+    return true;
+  }
+
+  private openConfigPicker = async () => {
+    if (this.configPickerResolver) throw new Error('configuration is already open');
+    if (this.pendingChoiceResolver || this.pendingApprovalResolver)
+      throw new Error('another prompt is already open');
+
+    await new Promise<void>(resolve => {
+      this.configPickerResolver = resolve;
+      this.store.setConfigPicker(createConfigPickerState(this.state));
+      this.render();
+    });
+  };
+
+  private async closeConfigPicker() {
+    const resolve = this.configPickerResolver;
+    const picker = this.state.configPicker;
+    if (!resolve || !picker) return false;
+
+    this.configPickerResolver = null;
+    const changed = applyConfigPickerState(this.store, picker);
+    this.store.setConfigPicker(null);
+    if (changed) {
+      await this.persistPreferences();
+      this.recordTurnContext();
+    }
+    this.render();
+    resolve();
+    return true;
+  }
+
+  private moveConfigPickerSelection(delta: number) {
+    const picker = this.state.configPicker;
+    if (!picker || picker.items.length === 0) return false;
+    const nextIndex =
+      (picker.selectedIndex + delta + picker.items.length) % picker.items.length;
+    this.store.setConfigPickerSelectedIndex(nextIndex);
+    this.render();
+    return true;
+  }
+
+  private async handleConfigPickerBinding(binding: ReturnType<typeof resolveInputBinding>) {
+    if (!this.state.configPicker || !binding) return false;
+
+    if (
+      binding.type === 'submit' ||
+      binding.type === 'escape' ||
+      binding.type === 'interrupt'
+    ) {
+      return await this.closeConfigPicker();
+    }
+    if (binding.type === 'moveSuggestion')
+      return this.moveConfigPickerSelection(binding.delta);
+    if (binding.type === 'insertText' && binding.text === ' ') {
+      const toggled = this.store.toggleSelectedConfigPickerItem();
+      if (toggled) this.render();
+      return true;
+    }
+
     return true;
   }
 
@@ -1541,6 +1618,7 @@ export class AgentApp {
             setPlanningMode: enabled => this.setPlanningMode(enabled),
             enqueueSubmission: (text, options) => this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
             openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
+            openConfigPicker: () => this.openConfigPicker(),
             requestChoice: request => this.requestChoice(request),
             showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
             getActiveToolSummaries: () => this.getActiveToolSummaries(),
@@ -1960,6 +2038,16 @@ export class AgentApp {
     return handleAbortKeypress(this.store);
   }
 
+  private startSubmissionTask(submission: string | QueuedSubmission) {
+    const task = this.processSubmission(submission);
+    this.activeSubmissionTask = task;
+    void task
+      .catch(error => this.handleFatalError(error))
+      .finally(() => {
+        if (this.activeSubmissionTask === task) this.activeSubmissionTask = null;
+      });
+  }
+
   private async submit() {
     const raw = this.state.inputChars.join('');
     const trimmed = raw.trim();
@@ -1997,13 +2085,7 @@ export class AgentApp {
       return;
     }
 
-    const task = this.processSubmission(raw);
-    this.activeSubmissionTask = task;
-    void task
-      .catch(error => this.handleFatalError(error))
-      .finally(() => {
-        if (this.activeSubmissionTask === task) this.activeSubmissionTask = null;
-      });
+    this.startSubmissionTask(raw);
   }
 
   private queueComposerDraft() {
@@ -2173,14 +2255,19 @@ export class AgentApp {
 
     if (!raw.trim()) return true;
 
-    if (this.state.busy || this.state.queuedSubmissions.length > 0 || this.drainingQueuedSubmissions) {
+    if (
+      this.activeSubmissionTask ||
+      this.state.busy ||
+      this.state.queuedSubmissions.length > 0 ||
+      this.drainingQueuedSubmissions
+    ) {
       this.store.enqueueSubmission({ text: raw });
       this.render();
       void this.drainQueuedSubmissions();
       return true;
     }
 
-    await this.processSubmission(raw);
+    this.startSubmissionTask(raw);
     return true;
   }
 
@@ -2265,6 +2352,8 @@ export class AgentApp {
       await this.pasteClipboardImage();
       return;
     }
+
+    if (await this.handleConfigPickerBinding(binding)) return;
 
     if (binding.type === 'interrupt') {
       if (this.sideConversationActive && this.state.inputChars.length === 0) {
