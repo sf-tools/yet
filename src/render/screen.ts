@@ -1,5 +1,4 @@
 import { formatWorkspacePath } from '@/text';
-import { getCachedGitBranch, refreshGitBranch } from '@/git';
 
 import type { RenderContext } from './types';
 import type { ThemePalette } from '@/theme';
@@ -18,13 +17,11 @@ export function createRenderContext(
   rows = process.stdout.rows || 30,
 ): RenderContext {
   const cwd = process.cwd();
-  void refreshGitBranch(cwd);
 
   return {
     width: frameWidth(columns),
     height: rows,
     cwd: formatWorkspacePath(cwd),
-    gitBranch: getCachedGitBranch(cwd),
     spinnerFrame,
     commandSpinnerFrame,
     busySpinnerVerb,

@@ -17,7 +17,7 @@ type PanelOptions = {
 function panelBodyLine(entry: Line, { bg, width }: PanelOptions) {
   const content = serializeLine(entry);
   const fill = repeat(' ', Math.max(0, width - widthOf(content) - 2));
-  return rawLine(`${LEFT_MARGIN}${chalk.bgHex(bg)(` ${content}${fill} `)}`);
+  return rawLine(`${' '}${chalk.bgHex(bg)(` ${content}${fill} `)}`);
 }
 
 function cloneSegment(segment: Segment): Segment {
@@ -38,11 +38,7 @@ export function styleText(text: string, style?: Style) {
   return style ? style(text) : text;
 }
 
-export function indent(
-  block: Block,
-  firstPrefix: PrefixValue,
-  restPrefix: PrefixValue = firstPrefix,
-): Block {
+export function indent(block: Block, firstPrefix: PrefixValue, restPrefix: PrefixValue = firstPrefix): Block {
   return block.map((entry, index) => {
     const prefix = normalizePrefix(index === 0 ? firstPrefix : restPrefix);
 

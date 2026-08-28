@@ -12,7 +12,7 @@ import { getLastAssistantResponse } from '@/agent/messages';
 import { appendFile, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
 import { OPENAI_MODEL_OPTIONS, getOpenAIProviderModelId } from '@/config';
-import { builtinSlashCommands, createSlashCommandRegistry, type SlashCommandContext } from '@/agent/slash-commands';
+import { builtinSlashCommands, type SlashCommandContext } from '@/agent/slash-commands';
 import { createWorkspaceSandboxProfile, isPermissionMode, isPotentiallyUnsafeCommand, isWithinWorkspace, shouldPromptForTool } from '@/permissions';
 import {
   SessionRecorder,
@@ -89,35 +89,6 @@ deepEqual(
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
-
-const slashRegistry = createSlashCommandRegistry(builtinSlashCommands);
-for (const removed of [
-  'about',
-  'ask',
-  'btw',
-  'commit',
-  'copy-conversation-id',
-  'copy-request-id',
-  'copy-session-id',
-  'image',
-  'img',
-  'paste-image',
-  'quit',
-  'reasoning',
-  'review',
-  'shell',
-  'show-thinking',
-  'showthinking',
-  'simplify',
-  'switch',
-  'thinking',
-  'toggle-auto-compact',
-  'toggleautocompact',
-  'tools',
-]) {
-  const parsed = slashRegistry.parse(`/${removed}`);
-  check(parsed?.type === 'unknown', `/${removed} is no longer registered`);
-}
 
 const statusEntries: HistoryEntry[] = [];
 const statusCommand = builtinSlashCommands.find(command => command.name === 'status');

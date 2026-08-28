@@ -129,42 +129,25 @@ function buildStatsLine(
   autoCompact: string,
 ) {
   const modelName = getOpenAIModelDisplayName(state.currentModel);
-  const statsSegments = [...footerPrefix];
-  let hasStats = false;
+  const statsSegments = [
+    ...footerPrefix,
+    span(modelName, chalk.white),
+    ...(isReasoningCapableOpenAIModel(state.currentModel)
+      ? [span(' '), span(formatThinkingMode(state.thinkingMode), thinkingModeStyle(state.thinkingMode))]
+      : []),
+  ];
 
   const appendStat = (text: string, style = ctx.theme.dimmed) => {
     if (!text) return;
-    if (hasStats) statsSegments.push(span(' · ', ctx.theme.subtle));
+    statsSegments.push(span(' · ', ctx.theme.subtle));
     statsSegments.push(span(text, style));
-    hasStats = true;
   };
 
   appendStat(usage?.text ?? '', contextUsageStyle(usage?.pct, ctx));
   appendStat(cost);
   appendStat(autoCompact);
 
-  return hasStats
-    ? line(
-        ...statsSegments,
-        span(' · ', ctx.theme.subtle),
-        span(modelName, chalk.white),
-        ...(isReasoningCapableOpenAIModel(state.currentModel)
-          ? [
-              span(' · ', ctx.theme.subtle),
-              span(formatThinkingMode(state.thinkingMode), thinkingModeStyle(state.thinkingMode)),
-            ]
-          : []),
-      )
-    : line(
-        ...footerPrefix,
-        span(modelName, chalk.white),
-        ...(isReasoningCapableOpenAIModel(state.currentModel)
-          ? [
-              span(' · ', ctx.theme.subtle),
-              span(formatThinkingMode(state.thinkingMode), thinkingModeStyle(state.thinkingMode)),
-            ]
-          : []),
-      );
+  return line(...statsSegments);
 }
 
 function buildModeLine(
@@ -257,19 +240,29 @@ export function renderFooter(state: AgentState, ctx: RenderContext): Block {
   const statsLine = buildStatsLine(state, ctx, footerPrefix, usage, cost, autoCompact);
   const modeLine = buildModeLine(state, ctx, footerPrefix, queued, statsLine);
 
-  const leftSegments = [
+  const locationSegments = [
     span(LEFT_MARGIN),
     span(ctx.cwd, ctx.theme.subtle),
-    ...(ctx.gitBranch
-      ? [span(' · ', ctx.theme.subtle), span(ctx.gitBranch, ctx.theme.subtle)]
-      : []),
     ...(state.planningMode
       ? [span(' · ', ctx.theme.subtle), span('plan mode', chalk.magentaBright)]
       : []),
   ];
   const rightSegments = fileChangeSummarySegments(state, ctx);
-  const locationLine = justifyLine(leftSegments, rightSegments, Math.max(1, ctx.width));
+  const width = Math.max(1, ctx.width);
+  const combinedSegments = [
+    ...locationSegments,
+    span(' · ', ctx.theme.subtle),
+    ...modeLine.segments.slice(1),
+  ];
+  const combinedWidth =
+    segmentsWidth(combinedSegments) +
+    segmentsWidth(rightSegments) +
+    (rightSegments.length > 0 ? 1 : 0);
+  const statusLines =
+    combinedWidth <= width
+      ? [justifyLine(combinedSegments, rightSegments, width)]
+      : [justifyLine(locationSegments, rightSegments, width), modeLine];
   const notice = buildNoticeLine(state, ctx, queued);
 
-  return [line(), modeLine, locationLine, ...(notice ? [line(), notice] : [])];
+  return [...statusLines, ...(notice ? [line(), notice] : [])];
 }

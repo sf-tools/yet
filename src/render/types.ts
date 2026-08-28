@@ -24,7 +24,6 @@ export type RenderContext = {
   width: number;
   height: number;
   cwd: string;
-  gitBranch: string | null;
   spinnerFrame: string;
   commandSpinnerFrame: string;
   busySpinnerVerb: string;

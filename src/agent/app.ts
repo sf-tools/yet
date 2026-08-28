@@ -4,7 +4,6 @@ import { createToolRegistry } from '@/tools';
 import { runUserShell } from './shell';
 import { randomUUID } from 'node:crypto';
 import { relative, resolve } from 'node:path';
-import { refreshGitBranch } from '@/git';
 import { readFile } from 'node:fs/promises';
 import { resolveInputBinding } from './keybinds';
 import { takeOverEarlyStdin } from './early-stdin';
@@ -371,7 +370,7 @@ export class AgentApp {
       ctx,
     ).block;
     const suggestionLines = renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
-    const footer = renderFooter(this.state, ctx);
+    const footer = suggestionLines.length > 0 ? [] : renderFooter(this.state, ctx);
 
     const topSections = [pendingHistory, preview, queued].filter(section => section.length > 0);
     const body = topSections.flatMap((section, index) =>
@@ -422,7 +421,6 @@ export class AgentApp {
 
   async start() {
     await this.theme.sync();
-    await refreshGitBranch(process.cwd());
     startMentionIndex(process.cwd());
 
     if (!this.bootFromSnapshot) {
@@ -481,15 +479,13 @@ export class AgentApp {
 
     if (code === 0) {
       const exitLines = serializeBlock(
-        renderExitSummary({
-          threadTitle: this.threadTitle,
-          threadUrl: null,
-          resumeCommand: this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null,
-        }),
+        renderExitSummary(
+          this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null,
+        ),
       );
 
       // The user sees the closing summary immediately. Only queued local writes remain afterward.
-      process.stdout.write(`${exitLines.join('\n')}\n`);
+      if (exitLines.length > 0) process.stdout.write(`${exitLines.join('\n')}\n`);
     }
 
     this.threadTitleRequest?.cancel();

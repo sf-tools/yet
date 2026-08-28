@@ -1,3 +1,5 @@
+import chalk from 'chalk';
+
 import { LEFT_MARGIN } from '../layout';
 import { line, span } from '../primitives';
 import { repeat, truncateToWidth, widthOf } from '@/text';
@@ -36,13 +38,16 @@ export function renderSuggestions(
     const customLabelStyle = 'labelStyle' in suggestion ? suggestion.labelStyle : undefined;
     const customSuffixStyle = 'suffixStyle' in suggestion ? suggestion.suffixStyle : undefined;
     const customDetailStyle = 'detailStyle' in suggestion ? suggestion.detailStyle : undefined;
-    const lineStyle = customLabelStyle
-      ? selected
-        ? customLabelStyle
-        : (text: string) => ctx.theme.dimmed(customLabelStyle(text))
-      : selected
-        ? ctx.theme.foreground
-        : ctx.theme.dimmed;
+    const lineStyle =
+      suggestion.kind === 'mention' && selected
+        ? chalk.magentaBright
+        : customLabelStyle
+          ? selected
+            ? customLabelStyle
+            : (text: string) => ctx.theme.dimmed(customLabelStyle(text))
+          : selected
+            ? ctx.theme.foreground
+            : ctx.theme.dimmed;
     const suffixStyle = customSuffixStyle || (selected ? ctx.theme.dimmed : ctx.theme.subtle);
     const detailStyle = customDetailStyle || (selected ? ctx.theme.foreground : ctx.theme.subtle);
     const detail = 'detail' in suggestion ? suggestion.detail : '';

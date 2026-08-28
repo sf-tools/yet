@@ -18,7 +18,8 @@ export type ComposerState = {
 function adjustComposerState(state: ComposerState) {
   const shellMode = state.inputChars[0] === '!';
   const slashMode = state.inputChars[0] === '/';
-  const hiddenPrefix = shellMode || slashMode ? 1 : 0;
+  const mentionMode = state.inputChars[0] === '@';
+  const hiddenPrefix = shellMode || slashMode || mentionMode ? 1 : 0;
 
   if (!hiddenPrefix) return { hiddenPrefix, inputState: state };
 
@@ -48,9 +49,7 @@ function renderInputLines(
   const lines: StyledLine[] = [];
   let segments: StyledLine['segments'] = [];
   let currentWidth = 0;
-  const pasteRanges = [...state.pasteRanges].sort(
-    (left, right) => left.start - right.start || left.end - right.end,
-  );
+  const pasteRanges = [...state.pasteRanges].sort((left, right) => left.start - right.start || left.end - right.end);
 
   const flushLine = (allowEmpty = false) => {
     if (segments.length === 0 && !allowEmpty) return;
@@ -76,14 +75,9 @@ function renderInputLines(
 
     if (range && index === range.start) {
       pasteCount += 1;
-      const extraLines = state.inputChars
-        .slice(range.start, range.end)
-        .filter(ch => ch === '\n').length;
+      const extraLines = state.inputChars.slice(range.start, range.end).filter(ch => ch === '\n').length;
       const label = `[paste #${pasteCount} +${extraLines} lines]`;
-      pushChar(
-        label,
-        state.cursor >= range.start && state.cursor < range.end ? chalk.inverse : undefined,
-      );
+      pushChar(label, state.cursor >= range.start && state.cursor < range.end ? chalk.inverse : undefined);
       index = range.end - 1;
       pasteIndex += 1;
       continue;
@@ -119,9 +113,7 @@ function buildCursorMap(state: ComposerState, viewWidth: number) {
     row: 0,
     col: 0,
   }));
-  const pasteRanges = [...state.pasteRanges].sort(
-    (left, right) => left.start - right.start || left.end - right.end,
-  );
+  const pasteRanges = [...state.pasteRanges].sort((left, right) => left.start - right.start || left.end - right.end);
   let pasteIndex = 0;
   let pasteCount = 0;
   let row = 0;
@@ -137,8 +129,7 @@ function buildCursorMap(state: ComposerState, viewWidth: number) {
       tokenCol = 0;
     }
 
-    for (let index = start; index < end; index += 1)
-      positions[index] = { row: tokenRow, col: tokenCol };
+    for (let index = start; index < end; index += 1) positions[index] = { row: tokenRow, col: tokenCol };
     row = tokenRow;
     col = tokenCol + tokenWidth;
     positions[end] = { row, col };
@@ -149,9 +140,7 @@ function buildCursorMap(state: ComposerState, viewWidth: number) {
 
     if (range && index === range.start) {
       pasteCount += 1;
-      const extraLines = state.inputChars
-        .slice(range.start, range.end)
-        .filter(ch => ch === '\n').length;
+      const extraLines = state.inputChars.slice(range.start, range.end).filter(ch => ch === '\n').length;
       placeToken(range.start, range.end, `[paste #${pasteCount} +${extraLines} lines]`);
       index = range.end - 1;
       pasteIndex += 1;
@@ -179,20 +168,17 @@ function renderComposerPrompt(
   ctx: RenderContext,
   shellMode: boolean,
   slashMode: boolean,
+  mentionMode: boolean,
   validSlashCommand: boolean,
 ): Segment {
   if (state.inputChars.length === 0) return span('→', ctx.theme.dimmed);
   if (shellMode) return span('!', chalk.yellow);
   if (slashMode) return span('/', validSlashCommand ? chalk.cyanBright : ctx.theme.foreground);
+  if (mentionMode) return span('@', chalk.magentaBright);
   return span('→', ctx.theme.foreground);
 }
 
-export function moveComposerCursorVertical(
-  state: ComposerState,
-  viewWidth: number,
-  delta: number,
-  preferredColumn?: number,
-) {
+export function moveComposerCursorVertical(state: ComposerState, viewWidth: number, delta: number, preferredColumn?: number) {
   const { hiddenPrefix, inputState } = adjustComposerState(state);
   const positions = buildCursorMap(inputState, viewWidth);
   const current = positions[Math.max(0, Math.min(inputState.cursor, positions.length - 1))] ?? {
@@ -229,17 +215,25 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
   const contentWidth = Math.max(1, ctx.width - 4);
   const shellMode = state.inputChars[0] === '!';
   const slashMode = state.inputChars[0] === '/';
+  const mentionMode = state.inputChars[0] === '@';
+  const compactPrefixMode = slashMode || mentionMode;
   const validSlashCommand = slashMode && (state.slashCommandLength ?? 0) > 0;
   const capabilitiesHint = state.showCapabilitiesHint ? '/ commands · @ files · ! shell' : '';
   const capabilitiesWidth = widthOf(capabilitiesHint);
-  const prompt = renderComposerPrompt(state, ctx, shellMode, slashMode, validSlashCommand);
+  const prompt = renderComposerPrompt(
+    state,
+    ctx,
+    shellMode,
+    slashMode,
+    mentionMode,
+    validSlashCommand,
+  );
   const promptWidth = widthOf(prompt.text);
   const hintWidth = capabilitiesHint ? capabilitiesWidth + 1 : 0;
-  const placeholderFill = (occupiedWidth: number) =>
-    repeat(' ', Math.max(0, contentWidth + 1 - occupiedWidth - hintWidth));
+  const placeholderFill = (occupiedWidth: number) => repeat(' ', Math.max(0, contentWidth + 1 - occupiedWidth - hintWidth));
 
   if (state.inputChars.length === 0) {
-    const label = 'Plan, search, build anything';
+    const label = 'Ask Yet to do anything';
     const fill = placeholderFill(promptWidth + 1 + widthOf(label));
 
     return {
@@ -286,15 +280,14 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
     };
   }
 
-  if (slashMode && state.inputChars.length === 1) {
-    const fill = placeholderFill(promptWidth + 2);
+  if (compactPrefixMode && state.inputChars.length === 1) {
+    const fill = placeholderFill(promptWidth + 1);
 
     return {
       block: thinPanelize(
         [
           line(
             prompt,
-            span(' '),
             span(' ', chalk.inverse),
             span(fill),
             ...(capabilitiesHint ? [span(' '), span(capabilitiesHint, ctx.theme.dimmed)] : []),
@@ -309,16 +302,28 @@ export function renderComposer(state: ComposerState, ctx: RenderContext): Compos
   }
 
   const { inputState } = adjustComposerState(state);
+  const mentionStyleAt = (index: number, char: string) => {
+    if (/\s/.test(char)) return undefined;
+
+    let tokenStart = index;
+    while (tokenStart > 0 && !/\s/.test(inputState.inputChars[tokenStart - 1])) tokenStart -= 1;
+
+    return (tokenStart === 0 && mentionMode) || inputState.inputChars[tokenStart] === '@'
+      ? chalk.magentaBright
+      : undefined;
+  };
   const inputLines = renderInputLines(
     inputState,
     contentWidth,
     slashMode
       ? index => (index < (state.slashCommandLength ?? 0) ? chalk.cyanBright : undefined)
-      : undefined,
+      : mentionStyleAt,
   );
   const block = inputLines.map((entry, index) =>
     line(
-      ...(index === 0 ? [prompt, span(' '), ...entry.segments] : [span('  '), ...entry.segments]),
+      ...(index === 0
+        ? [prompt, ...(compactPrefixMode ? [] : [span(' ')]), ...entry.segments]
+        : [span(compactPrefixMode ? ' ' : '  '), ...entry.segments]),
     ),
   );
 
