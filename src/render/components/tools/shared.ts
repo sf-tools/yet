@@ -305,8 +305,7 @@ export function renderToolCard(
       : status === 'running'
         ? ctx.theme.spinnerText
         : ctx.theme.dimmed;
-  const statusLabel =
-    status === 'failed' ? 'failed' : status === 'running' ? `${ctx.spinnerFrame} running` : 'done';
+  const statusLabel = status === 'failed' ? 'failed' : status === 'running' ? 'running' : 'done';
   const bodyStyle = status === 'failed' ? chalk.redBright : ctx.theme.dimmed;
   const width = Math.max(1, ctx.width - 4);
   const headerPrefixWidth = widthOf(`⌁ ${name}`);

@@ -9,9 +9,6 @@ export function frameWidth(columns = process.stdout.columns || 100) {
 
 export function createRenderContext(
   theme: ThemePalette,
-  spinnerFrame: string,
-  commandSpinnerFrame: string,
-  busySpinnerVerb: string,
   expandPreviews = false,
   columns = process.stdout.columns || 100,
   rows = process.stdout.rows || 30,
@@ -22,9 +19,6 @@ export function createRenderContext(
     width: frameWidth(columns),
     height: rows,
     cwd: formatWorkspacePath(cwd),
-    spinnerFrame,
-    commandSpinnerFrame,
-    busySpinnerVerb,
     theme,
     expandPreviews,
   };

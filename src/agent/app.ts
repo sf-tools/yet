@@ -1,4 +1,3 @@
-import ora from 'ora';
 import { createTheme } from '@/theme';
 import { createToolRegistry } from '@/tools';
 import { runUserShell } from './shell';
@@ -8,17 +7,11 @@ import { readFile } from 'node:fs/promises';
 import { resolveInputBinding } from './keybinds';
 import { takeOverEarlyStdin } from './early-stdin';
 import { startMentionIndex } from './mention-index';
-import {
-  discoverSkills,
-  loadSkillInstructionMessages,
-  renderSkillsCatalog,
-  selectedSkills,
-  type SkillMetadata,
-} from './skills';
+import { discoverSkills, loadSkillInstructionMessages, renderSkillsCatalog, selectedSkills, type SkillMetadata } from './skills';
 import { PromptHistoryStore } from './prompt-history';
 import { blankLine, vstack } from '@/render/primitives';
-import { pickSpinnerVerb } from '@/render/spinner-verbs';
 import { renderFooter } from '@/render/components/footer';
+import { renderStatusIndicator } from '@/render/components/status-indicator';
 import type { ReadStream as TtyReadStream } from 'node:tty';
 import { renderHistoryEntry } from '@/render/components/entry';
 import { compactMessages, canCompactMessages } from './compact';
@@ -37,61 +30,25 @@ import {
   type ThreadNameSource,
   type YetSessionEvent,
 } from './session-storage';
-import {
-  createProvisionalThreadTitle,
-  startBackgroundThreadTitle,
-  type BackgroundThreadTitleRequest,
-} from './thread-title';
+import { createProvisionalThreadTitle, startBackgroundThreadTitle, type BackgroundThreadTitleRequest } from './thread-title';
 import { normalizePtyOutput, plain, installSegmentContainingPolyfill } from '@/text';
 import { handleAbortKeypress, createAbortController, resetAbortState } from './abort';
 import { renderComposer, moveComposerCursorVertical } from '@/render/components/composer';
 import { acceptComposerSuggestion, listComposerSuggestions } from './composer-suggestions';
 import { createAgentStore, type AgentState, type AgentStore, type QueuedSubmission } from '@/store';
 
-import {
-  attachFromPath,
-  extractTokens,
-  findAttachment,
-  IMAGE_TOKEN_PATTERN,
-  replaceTokensWithSummary,
-  type Attachment,
-} from './image-attachments';
+import { attachFromPath, extractTokens, findAttachment, IMAGE_TOKEN_PATTERN, replaceTokensWithSummary, type Attachment } from './image-attachments';
 
-import {
-  createRenderContext,
-  frameWidth,
-  renderExitSummary,
-  renderHeader,
-  serializeBlock,
-} from '@/render';
+import { createRenderContext, frameWidth, renderExitSummary, renderHeader, serializeBlock } from '@/render';
 
-import {
-  getLastAssistantResponse,
-  type AgentImagePart,
-  type AgentMessage,
-  type AgentTextPart,
-} from './messages';
+import { getLastAssistantResponse, type AgentImagePart, type AgentMessage, type AgentTextPart } from './messages';
 import { runAgentLoop } from './runner';
 import { BlockStreamPump } from './block-stream';
-import {
-  shouldPromptForTool,
-  type PermissionMode,
-  type ToolPermission,
-} from '@/permissions';
+import { shouldPromptForTool, type PermissionMode, type ToolPermission } from '@/permissions';
 
-import {
-  createFailedToolEntry,
-  createPendingToolEntry,
-  createCompletedToolEntry,
-} from './tool-history';
+import { createFailedToolEntry, createPendingToolEntry, createCompletedToolEntry } from './tool-history';
 
-import {
-  cycleThinkingMode,
-  getCompactionTriggerTokens,
-  getSupportedThinkingModes,
-  loadYetPreferences,
-  saveYetPreferences,
-} from '@/config';
+import { cycleThinkingMode, getCompactionTriggerTokens, getSupportedThinkingModes, loadYetPreferences, saveYetPreferences } from '@/config';
 
 import {
   EntryKind,
@@ -138,10 +95,7 @@ function estimateValueTokens(value: unknown): number {
 }
 
 function estimateMessageTokens(messages: AgentMessage[]) {
-  return messages.reduce(
-    (sum, message) => sum + estimateValueTokens('content' in message ? message.content : message),
-    0,
-  );
+  return messages.reduce((sum, message) => sum + estimateValueTokens('content' in message ? message.content : message), 0);
 }
 
 export type AgentAppOptions = {
@@ -158,9 +112,6 @@ export type AgentAppOptions = {
 export class AgentApp {
   private readonly store: AgentStore;
   private readonly theme = createTheme();
-  private readonly spinner = ora({ spinner: 'dots10', color: 'green', isEnabled: false });
-  private readonly commandSpinner = ora({ spinner: 'dots3', color: 'yellow', isEnabled: false });
-  private busySpinnerVerb = pickSpinnerVerb();
 
   private transientLineCount = 0;
   private committedHistoryCount = 0;
@@ -181,8 +132,7 @@ export class AgentApp {
     recordFileMutations: files => {
       if (!files.some(file => file.previousContent !== file.nextContent)) return;
       for (const file of files) {
-        if (!this.sessionFileBaselines.has(file.path))
-          this.sessionFileBaselines.set(file.path, file.previousContent);
+        if (!this.sessionFileBaselines.has(file.path)) this.sessionFileBaselines.set(file.path, file.previousContent);
       }
     },
   });
@@ -190,8 +140,9 @@ export class AgentApp {
     getSessionId: () => this.sessionId,
   });
 
-  private readonly spinnerTimer: ReturnType<typeof setInterval>;
+  private readonly statusAnimationTimer: ReturnType<typeof setInterval>;
   private readonly rainbowTimer: ReturnType<typeof setInterval>;
+  private busyStartedAt: number | null = null;
   private sessionId: string;
   private readonly promptHistory = new PromptHistoryStore();
   private readonly bootFromSnapshot: boolean;
@@ -255,18 +206,12 @@ export class AgentApp {
   }
 
   private patchTransientLines(lines: string[]) {
-    if (
-      !process.stdout.isTTY ||
-      this.transientLineCount === 0 ||
-      this.lastTransientLines.length !== lines.length
-    ) {
+    if (!process.stdout.isTTY || this.transientLineCount === 0 || this.lastTransientLines.length !== lines.length) {
       this.redrawTransientLines(lines);
       return;
     }
 
-    const changedRows = lines.flatMap((line, index) =>
-      line === this.lastTransientLines[index] ? [] : [index],
-    );
+    const changedRows = lines.flatMap((line, index) => (line === this.lastTransientLines[index] ? [] : [index]));
     if (changedRows.length === 0) return;
 
     if (this.transientLineCount > 1) process.stdout.write(`\u001b[${this.transientLineCount - 1}F`);
@@ -315,8 +260,7 @@ export class AgentApp {
       const entry = this.state.historyEntries[index];
       if (entry.type !== 'entry') continue;
       if (entry.kind === EntryKind.User) return null;
-      if (entry.kind === EntryKind.Assistant)
-        return RAINBOW_PHRASE_PATTERN.test(entry.text) ? index : null;
+      if (entry.kind === EntryKind.Assistant) return RAINBOW_PHRASE_PATTERN.test(entry.text) ? index : null;
     }
 
     return null;
@@ -328,6 +272,7 @@ export class AgentApp {
 
   private flushCommittedHistory(ctx: ReturnType<typeof createRenderContext>) {
     const lines: string[] = [];
+    const startsConversation = this.committedHistoryCount === 0;
     const animatedAssistantIndex = this.getAnimatedAssistantIndex();
 
     while (this.committedHistoryCount < this.state.historyEntries.length) {
@@ -336,28 +281,23 @@ export class AgentApp {
       if (entry.type === 'tool' && entry.status === 'running') break;
       if (index === animatedAssistantIndex) break;
 
-      if (this.shouldRenderHistoryEntry(entry)) lines.push(...serializeBlock(renderHistoryEntry(entry, ctx)), '');
+      if (this.shouldRenderHistoryEntry(entry)) lines.push(...serializeBlock(renderHistoryEntry(entry, ctx)));
       this.committedHistoryCount += 1;
     }
 
+    if (startsConversation && lines.length > 0) lines.unshift('');
     this.appendPermanentLines(lines);
   }
 
-  private renderTransientLines(
-    ctx: ReturnType<typeof createRenderContext>,
-    suggestions: ReturnType<AgentApp['normalizeSuggestions']>,
-  ) {
+  private renderTransientLines(ctx: ReturnType<typeof createRenderContext>, suggestions: ReturnType<AgentApp['normalizeSuggestions']>) {
     const animatedAssistantIndex = this.getAnimatedAssistantIndex();
-    const pendingHistory = this.state.historyEntries
-      .slice(this.committedHistoryCount)
-      .flatMap((entry, offset) => {
-        const index = this.committedHistoryCount + offset;
-        if (!this.shouldRenderHistoryEntry(entry)) return [];
-        return [
-          ...renderHistoryEntry(entry, ctx, { animateAssistant: index === animatedAssistantIndex }),
-          blankLine(),
-        ];
+    const pendingHistory = this.state.historyEntries.slice(this.committedHistoryCount).flatMap((entry, offset) => {
+      const index = this.committedHistoryCount + offset;
+      if (!this.shouldRenderHistoryEntry(entry)) return [];
+      return renderHistoryEntry(entry, ctx, {
+        animateAssistant: index === animatedAssistantIndex,
       });
+    });
     const preview = renderOutputPreview(
       this.state.showThinking ? this.state.liveReasoningText : '',
       this.state.liveAssistantText,
@@ -380,15 +320,12 @@ export class AgentApp {
     ).block;
     const suggestionLines = renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
     const footer = suggestionLines.length > 0 ? [] : renderFooter(this.state, ctx);
+    const statusIndicator = renderStatusIndicator(this.state, this.busyStartedAt === null ? 0 : Date.now() - this.busyStartedAt);
 
     const topSections = [pendingHistory, preview, queued].filter(section => section.length > 0);
-    const body = topSections.flatMap((section, index) =>
-      index === 0 ? section : [blankLine(), ...section],
-    );
-    const blocks =
-      body.length > 0
-        ? [body, [blankLine()], composer, suggestionLines, footer]
-        : [composer, suggestionLines, footer];
+    const body = topSections.flatMap((section, index) => (index === 0 ? section : [blankLine(), ...section]));
+    const composerLead = statusIndicator.length > 0 ? [...statusIndicator, blankLine()] : [blankLine()];
+    const blocks = body.length > 0 ? [body, composerLead, composer, suggestionLines, footer] : [composerLead, composer, suggestionLines, footer];
 
     return serializeBlock(vstack(...blocks));
   }
@@ -398,7 +335,8 @@ export class AgentApp {
   }
 
   private setBusy(busy: boolean) {
-    if (busy && !this.state.busy) this.busySpinnerVerb = pickSpinnerVerb();
+    if (busy && !this.state.busy) this.busyStartedAt = Date.now();
+    if (!busy) this.busyStartedAt = null;
     this.store.setBusy(busy);
   }
 
@@ -413,11 +351,11 @@ export class AgentApp {
     this.sessionRolloutPath = options.rolloutPath;
     this.sessionCreatedAt = options.sessionCreatedAt;
 
-    this.spinnerTimer = setInterval(() => {
+    this.statusAnimationTimer = setInterval(() => {
       if (!this.state.busy || this.state.closed) return;
       this.scheduleRender();
-    }, 80);
-    this.spinnerTimer.unref();
+    }, 32);
+    this.statusAnimationTimer.unref();
 
     this.rainbowTimer = setInterval(() => {
       if (this.state.closed || !this.hasRainbowPhraseVisible()) return;
@@ -448,9 +386,7 @@ export class AgentApp {
     if (this.modelOverride) this.store.setCurrentModel(this.modelOverride);
     if (this.thinkingModeOverride) {
       if (!getSupportedThinkingModes(this.state.currentModel).includes(this.thinkingModeOverride))
-        throw new Error(
-          `${this.state.currentModel} does not support ${this.thinkingModeOverride} reasoning effort`,
-        );
+        throw new Error(`${this.state.currentModel} does not support ${this.thinkingModeOverride} reasoning effort`);
       this.store.setThinkingMode(this.thinkingModeOverride);
     }
     if (this.permissionModeOverride) this.store.setPermissionMode(this.permissionModeOverride);
@@ -480,7 +416,7 @@ export class AgentApp {
     if (this.state.closed) return;
     this.store.setClosed();
 
-    clearInterval(this.spinnerTimer);
+    clearInterval(this.statusAnimationTimer);
     clearInterval(this.rainbowTimer);
     if (this.renderTimer) clearTimeout(this.renderTimer);
     if (this.footerNoticeTimer) clearTimeout(this.footerNoticeTimer);
@@ -493,11 +429,7 @@ export class AgentApp {
     if (process.stdout.isTTY) process.stdout.write('\u001b[?25h\u001b[?2004l');
 
     if (code === 0) {
-      const exitLines = serializeBlock(
-        renderExitSummary(
-          this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null,
-        ),
-      );
+      const exitLines = serializeBlock(renderExitSummary(this.hasResumableSession() ? `yet --resume=${this.sessionId}` : null));
 
       // The user sees the closing summary immediately. Only queued local writes remain afterward.
       if (exitLines.length > 0) process.stdout.write(`${exitLines.join('\n')}\n`);
@@ -510,9 +442,7 @@ export class AgentApp {
       try {
         await this.sessionRecorder?.close();
       } catch (error) {
-        process.stderr.write(
-          `warning: could not finish saving this session: ${plain(error instanceof Error ? error.message : String(error))}\n`,
-        );
+        process.stderr.write(`warning: could not finish saving this session: ${plain(error instanceof Error ? error.message : String(error))}\n`);
       }
       process.exit(code);
     })();
@@ -521,9 +451,7 @@ export class AgentApp {
   handleFatalError(error: unknown, code = 1) {
     this.clearTransientBlock();
     if (process.stdout.isTTY) process.stdout.write('\u001b[?25h');
-    process.stderr.write(
-      `${plain(error instanceof Error ? error.stack || error.message : String(error))}\n`,
-    );
+    process.stderr.write(`${plain(error instanceof Error ? error.stack || error.message : String(error))}\n`);
     this.cleanup(code);
   }
 
@@ -543,9 +471,7 @@ export class AgentApp {
       return suggestions;
     }
 
-    this.store.setSelectedSuggestion(
-      Math.max(0, Math.min(this.state.selectedSuggestion, suggestions.length - 1)),
-    );
+    this.store.setSelectedSuggestion(Math.max(0, Math.min(this.state.selectedSuggestion, suggestions.length - 1)));
     return suggestions;
   }
 
@@ -567,15 +493,7 @@ export class AgentApp {
   }
 
   private createCurrentRenderContext() {
-    return createRenderContext(
-      this.theme,
-      this.spinner.frame().trim(),
-      this.commandSpinner.frame().trim(),
-      this.busySpinnerVerb,
-      this.expandPreviews,
-      process.stdout.columns || 100,
-      process.stdout.rows || 30,
-    );
+    return createRenderContext(this.theme, this.expandPreviews, process.stdout.columns || 100, process.stdout.rows || 30);
   }
 
   private printEphemeralEntries(entries: HistoryEntry[]) {
@@ -595,22 +513,12 @@ export class AgentApp {
 
     const columns = process.stdout.columns || 100;
     const rows = process.stdout.rows || 30;
-    const resized =
-      this.lastRenderColumns > 0 &&
-      (columns !== this.lastRenderColumns || rows !== this.lastRenderRows);
+    const resized = this.lastRenderColumns > 0 && (columns !== this.lastRenderColumns || rows !== this.lastRenderRows);
 
     if (resized) this.resetRenderedScreen();
 
     const suggestions = this.normalizeSuggestions();
-    const ctx = createRenderContext(
-      this.theme,
-      this.spinner.frame().trim(),
-      this.commandSpinner.frame().trim(),
-      this.busySpinnerVerb,
-      this.expandPreviews,
-      columns,
-      rows,
-    );
+    const ctx = createRenderContext(this.theme, this.expandPreviews, columns, rows);
 
     this.lastRenderColumns = columns;
     this.lastRenderRows = rows;
@@ -653,10 +561,7 @@ export class AgentApp {
   }
 
   private hasRainbowPhraseVisible() {
-    return (
-      RAINBOW_PHRASE_PATTERN.test(this.state.liveAssistantText) ||
-      this.getAnimatedAssistantIndex() !== null
-    );
+    return RAINBOW_PHRASE_PATTERN.test(this.state.liveAssistantText) || this.getAnimatedAssistantIndex() !== null;
   }
 
   private showFooterNotice(text: string, durationMs = 2_000) {
@@ -693,8 +598,7 @@ export class AgentApp {
     request = startBackgroundThreadTitle({
       userMessage,
       expectedTitle,
-      getCurrentTitle: () =>
-        !this.state.closed && this.sessionId === sessionId ? this.threadTitle : null,
+      getCurrentTitle: () => (!this.state.closed && this.sessionId === sessionId ? this.threadTitle : null),
       applyTitle: title => {
         if (this.state.closed || this.sessionId !== sessionId) return;
         this.setThreadTitle(title, 'generated', expectedTitle);
@@ -758,8 +662,7 @@ export class AgentApp {
 
   private setCurrentModel(model: string) {
     this.store.setCurrentModel(model);
-    if (!getSupportedThinkingModes(model).includes(this.state.thinkingMode))
-      this.store.setThinkingMode('auto');
+    if (!getSupportedThinkingModes(model).includes(this.state.thinkingMode)) this.store.setThinkingMode('auto');
     this.store.resetLastUsage();
     this.persistPreferences();
     this.recordTurnContext();
@@ -787,11 +690,7 @@ export class AgentApp {
     this.render();
   }
 
-  private setThreadTitle(
-    title: string | null,
-    source: ThreadNameSource = 'manual',
-    expectedName?: string,
-  ) {
+  private setThreadTitle(title: string | null, source: ThreadNameSource = 'manual', expectedName?: string) {
     if (source === 'manual') {
       this.threadTitleRequest?.cancel();
       this.threadTitleRequest = null;
@@ -830,12 +729,7 @@ export class AgentApp {
       }
 
       const description =
-        typeof tool === 'object' &&
-        tool !== null &&
-        'description' in tool &&
-        typeof tool.description === 'string'
-          ? tool.description.trim()
-          : null;
+        typeof tool === 'object' && tool !== null && 'description' in tool && typeof tool.description === 'string' ? tool.description.trim() : null;
 
       groups.set(tool, { names: [name], description });
     }
@@ -843,10 +737,7 @@ export class AgentApp {
     return [...groups.values()].sort((a, b) => a.names[0].localeCompare(b.names[0]));
   }
 
-  private getRuntimeMessages(
-    messages: AgentMessage[] = this.state.messages,
-    planningMode = this.state.planningMode,
-  ): AgentMessage[] {
+  private getRuntimeMessages(messages: AgentMessage[] = this.state.messages, planningMode = this.state.planningMode): AgentMessage[] {
     const permissionPrompt =
       this.state.permissionMode === 'full'
         ? '<permissions mode="full">The user explicitly enabled Full Access. Tools run without the workspace sandbox or approval prompts.</permissions>'
@@ -863,9 +754,7 @@ export class AgentApp {
         ].join('\n')
       : '';
     const skillsPrompt = renderSkillsCatalog(this.skills);
-    const runtimePrompt = [permissionPrompt, planningModePrompt, skillsPrompt]
-      .filter(Boolean)
-      .join('\n\n');
+    const runtimePrompt = [permissionPrompt, planningModePrompt, skillsPrompt].filter(Boolean).join('\n\n');
 
     const [first, ...rest] = messages;
     if (first?.role === 'system' && typeof first.content === 'string') {
@@ -893,10 +782,7 @@ export class AgentApp {
   }
 
   private shouldAutoCompact() {
-    return (
-      this.state.autoCompactEnabled &&
-      this.state.lastPromptTokens >= getCompactionTriggerTokens(this.state.currentModel)
-    );
+    return this.state.autoCompactEnabled && this.state.lastPromptTokens >= getCompactionTriggerTokens(this.state.currentModel);
   }
 
   private togglePreviewExpansion() {
@@ -921,10 +807,7 @@ export class AgentApp {
     if (nextFileChanges.length > 0) this.store.upsertSessionFileChanges(nextFileChanges);
   }
 
-  private authorizeTool = async (
-    request: ApprovalRequest,
-    authorization: { requested: ToolPermission; potentiallyUnsafe?: boolean },
-  ) => {
+  private authorizeTool = async (request: ApprovalRequest, authorization: { requested: ToolPermission; potentiallyUnsafe?: boolean }) => {
     if (
       !shouldPromptForTool({
         mode: this.state.permissionMode,
@@ -963,9 +846,7 @@ export class AgentApp {
     if (this.pendingChoiceResolver) throw new Error('another choice is already pending');
     if (request.options.length < 2) throw new Error('choice prompt requires at least two options');
 
-    const recommendedIndex = request.recommendedValue
-      ? request.options.findIndex(option => option.value === request.recommendedValue)
-      : -1;
+    const recommendedIndex = request.recommendedValue ? request.options.findIndex(option => option.value === request.recommendedValue) : -1;
     const selectedIndex = recommendedIndex >= 0 ? recommendedIndex : 0;
 
     const selection = await new Promise<ChoiceSelection | null>(resolve => {
@@ -991,11 +872,7 @@ export class AgentApp {
 
   private persistCompactionNotice(text: string) {
     const lastEntry = this.state.historyEntries[this.state.historyEntries.length - 1];
-    if (
-      lastEntry?.type === 'entry' &&
-      lastEntry.kind === EntryKind.Meta &&
-      lastEntry.text === text
-    ) {
+    if (lastEntry?.type === 'entry' && lastEntry.kind === EntryKind.Meta && lastEntry.text === text) {
       this.render();
       return;
     }
@@ -1120,9 +997,7 @@ export class AgentApp {
     return out;
   }
 
-  private async buildUserMessageContent(
-    text: string,
-  ): Promise<string | Array<AgentTextPart | AgentImagePart>> {
+  private async buildUserMessageContent(text: string): Promise<string | Array<AgentTextPart | AgentImagePart>> {
     const expanded = await this.expand(text);
     const tokens = extractTokens(expanded);
     if (tokens.length === 0) return expanded;
@@ -1170,10 +1045,7 @@ export class AgentApp {
       if (trimmed) this.persistAnsi(trimmed);
       else if (exitCode === 0) this.persistPlain('(no output)');
     } catch (error: unknown) {
-      this.persistEntry(
-        EntryKind.Error,
-        plain(error instanceof Error ? error.message : String(error)),
-      );
+      this.persistEntry(EntryKind.Error, plain(error instanceof Error ? error.message : String(error)));
     } finally {
       this.setBusy(false);
       this.render();
@@ -1207,8 +1079,7 @@ export class AgentApp {
     if (!trimmed) return;
 
     const planningModeOverride = queuedSubmission.planningMode;
-    const previousPlanningMode =
-      planningModeOverride === undefined ? undefined : this.state.planningMode;
+    const previousPlanningMode = planningModeOverride === undefined ? undefined : this.state.planningMode;
 
     if (planningModeOverride !== undefined && planningModeOverride !== this.state.planningMode) {
       this.store.setPlanningMode(planningModeOverride);
@@ -1241,8 +1112,7 @@ export class AgentApp {
             setThinkingMode: thinkingMode => this.setThinkingMode(thinkingMode),
             setPermissionMode: permissionMode => this.setPermissionMode(permissionMode),
             setPlanningMode: enabled => this.setPlanningMode(enabled),
-            enqueueSubmission: (text, options) =>
-              this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
+            enqueueSubmission: (text, options) => this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
             openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
             requestChoice: request => this.requestChoice(request),
             showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
@@ -1264,17 +1134,11 @@ export class AgentApp {
           },
         );
       } catch (error: unknown) {
-        this.persistEntry(
-          EntryKind.Error,
-          plain(error instanceof Error ? error.message : String(error)),
-        );
+        this.persistEntry(EntryKind.Error, plain(error instanceof Error ? error.message : String(error)));
       } finally {
         this.setBusy(false);
 
-        if (
-          previousPlanningMode !== undefined &&
-          this.state.planningMode !== previousPlanningMode
-        ) {
+        if (previousPlanningMode !== undefined && this.state.planningMode !== previousPlanningMode) {
           this.store.setPlanningMode(previousPlanningMode);
           this.store.resetLastUsage();
           this.recordTurnContext();
@@ -1430,10 +1294,7 @@ export class AgentApp {
                 type: 'tool_result',
                 payload: { entry, message: event.message },
               });
-              if (event.result.fileChanges?.length)
-                await this.refreshSessionFileChanges(
-                  event.result.fileChanges.map(fileChange => fileChange.path),
-                );
+              if (event.result.fileChanges?.length) await this.refreshSessionFileChanges(event.result.fileChanges.map(fileChange => fileChange.path));
               this.scheduleRender();
               break;
             }
@@ -1508,7 +1369,7 @@ export class AgentApp {
           {
             type: 'entry',
             kind: EntryKind.Meta,
-            text: this.state.steerRequested ? '(steered)' : '(aborted)',
+            text: this.state.steerRequested ? '(steered)' : '■ Conversation interrupted - tell the model what to do differently',
           },
         ]);
       } else {
@@ -1613,13 +1474,7 @@ export class AgentApp {
 
   private requestSteer() {
     const controller = this.state.abortController;
-    if (
-      !this.state.busy ||
-      !controller ||
-      this.state.queuedSubmissions.length === 0 ||
-      this.state.steerRequested
-    )
-      return false;
+    if (!this.state.busy || !controller || this.state.queuedSubmissions.length === 0 || this.state.steerRequested) return false;
 
     this.store.setSteerRequested(true);
     this.store.setAbortRequested(true);
@@ -1643,11 +1498,7 @@ export class AgentApp {
     this.store.resetSelectedSuggestion();
     this.render();
 
-    if (
-      this.state.busy ||
-      this.state.queuedSubmissions.length > 0 ||
-      this.drainingQueuedSubmissions
-    ) {
+    if (this.state.busy || this.state.queuedSubmissions.length > 0 || this.drainingQueuedSubmissions) {
       this.store.enqueueSubmission({ text: raw });
       this.render();
       void this.drainQueuedSubmissions();
@@ -1696,18 +1547,14 @@ export class AgentApp {
           tokens.push(attachment.token);
           summaries.push(attachment.originalName);
         } catch (error) {
-          this.showFooterNotice(
-            `couldn't attach ${file.absolutePath}: ${error instanceof Error ? error.message : 'error'}`,
-          );
+          this.showFooterNotice(`couldn't attach ${file.absolutePath}: ${error instanceof Error ? error.message : 'error'}`);
         }
       }
       if (tokens.length === 0) return;
       this.historyNavigationIndex = null;
       this.resetPreferredComposerColumn();
       this.store.insertText(tokens.join(' '));
-      this.showFooterNotice(
-        `attached ${summaries.length === 1 ? summaries[0] : `${summaries.length} images`}`,
-      );
+      this.showFooterNotice(`attached ${summaries.length === 1 ? summaries[0] : `${summaries.length} images`}`);
       this.render();
     })();
     return true;
@@ -1718,9 +1565,7 @@ export class AgentApp {
     if (suggestions.length === 0) return false;
 
     this.resetPreferredComposerColumn();
-    this.store.setSelectedSuggestion(
-      (this.state.selectedSuggestion + delta + suggestions.length) % suggestions.length,
-    );
+    this.store.setSelectedSuggestion((this.state.selectedSuggestion + delta + suggestions.length) % suggestions.length);
     this.render();
     return true;
   }
@@ -1782,11 +1627,7 @@ export class AgentApp {
 
     if (!raw.trim()) return true;
 
-    if (
-      this.state.busy ||
-      this.state.queuedSubmissions.length > 0 ||
-      this.drainingQueuedSubmissions
-    ) {
+    if (this.state.busy || this.state.queuedSubmissions.length > 0 || this.drainingQueuedSubmissions) {
       this.store.enqueueSubmission({ text: raw });
       this.render();
       void this.drainQueuedSubmissions();
@@ -1827,8 +1668,7 @@ export class AgentApp {
     if (!this.state.pendingChoice || !binding) return false;
 
     if (binding.type === 'escape') return this.resolvePendingChoice(null);
-    if (binding.type === 'submit')
-      return this.resolvePendingChoice(this.getSelectedPendingChoice());
+    if (binding.type === 'submit') return this.resolvePendingChoice(this.getSelectedPendingChoice());
     if (binding.type === 'moveSuggestion') return this.movePendingChoice(binding.delta);
     if (binding.type !== 'insertText') return true;
 
@@ -1865,13 +1705,6 @@ export class AgentApp {
       this.render();
       return;
     }
-
-    if (this.state.inputChars.length === 0 && this.state.selectedSuggestion === 0) return;
-    this.clearHistoryNavigation();
-    this.resetPreferredComposerColumn();
-    this.store.resetComposer();
-    this.store.resetSelectedSuggestion();
-    this.render();
   }
 
   private handleDelete(backward: boolean) {
@@ -1889,6 +1722,16 @@ export class AgentApp {
     if (!binding) return;
 
     if (binding.type === 'interrupt') {
+      if (this.state.inputChars.length > 0) {
+        this.clearHistoryNavigation();
+        this.resetPreferredComposerColumn();
+        this.store.resetComposer();
+        this.store.resetSelectedSuggestion();
+        this.store.setExitConfirmationPending(false);
+        this.render();
+        return;
+      }
+
       if (!this.shouldConfirmExit()) {
         this.cleanup(0);
         return;
@@ -1913,11 +1756,6 @@ export class AgentApp {
     }
 
     if (this.state.exitConfirmationPending) this.store.setExitConfirmationPending(false);
-
-    if (this.state.abortConfirmationPending) {
-      this.store.setAbortConfirmationPending(false);
-      this.render();
-    }
 
     if (binding.type === 'toggleThinkingMode') {
       this.cycleThinkingMode();

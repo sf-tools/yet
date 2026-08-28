@@ -36,7 +36,6 @@ export type AgentState = {
   liveReasoningTokens: number;
   totalCost: number;
   abortController: AbortController | null;
-  abortConfirmationPending: boolean;
   abortRequested: boolean;
   steerRequested: boolean;
   exitConfirmationPending: boolean;

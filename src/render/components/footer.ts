@@ -174,17 +174,14 @@ function buildModeLine(
   if (state.compacting) {
     return line(
       ...footerPrefix,
-      span(joinFooterParts(`${ctx.commandSpinnerFrame} Compacting...`, queued), chalk.yellow),
+      span(joinFooterParts('Compacting...', queued), chalk.yellow),
     );
   }
 
   if (state.busy && state.busyStatusText) {
     return line(
       ...footerPrefix,
-      span(
-        joinFooterParts(`${ctx.commandSpinnerFrame} running ${state.busyStatusText}`, queued),
-        chalk.yellow,
-      ),
+      span(joinFooterParts(`running ${state.busyStatusText}`, queued), chalk.yellow),
     );
   }
 
@@ -204,20 +201,8 @@ function buildNoticeLine(state: AgentState, ctx: RenderContext, queued: string) 
     return line(span(LEFT_MARGIN), span(joinFooterParts('Aborting…', queued), chalk.redBright));
   }
 
-  if (state.abortConfirmationPending) {
-    return line(span(LEFT_MARGIN), span('Press Esc again to abort', chalk.redBright));
-  }
-
   if (state.footerNotice) {
     return line(span(LEFT_MARGIN), span(state.footerNotice, chalk.hex('#8ab4ff')));
-  }
-
-  if (state.busy && !state.busyStatusText) {
-    return line(
-      span(LEFT_MARGIN),
-      span(`${ctx.spinnerFrame} ${ctx.busySpinnerVerb}...`, ctx.theme.spinnerText),
-      ...(queued ? [span(' · ', ctx.theme.subtle), span(queued, chalk.yellow)] : []),
-    );
   }
 
   return null;

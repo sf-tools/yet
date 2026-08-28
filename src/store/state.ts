@@ -24,7 +24,6 @@ export const createInitialState = (): AgentState => ({
   liveReasoningTokens: 0,
   totalCost: 0,
   abortController: null,
-  abortConfirmationPending: false,
   abortRequested: false,
   steerRequested: false,
   exitConfirmationPending: false,

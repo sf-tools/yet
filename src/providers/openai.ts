@@ -212,6 +212,15 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
     if (event.type === 'response.completed') completed = event.response;
   }
 
+  if (!completed && options.signal?.aborted) {
+    return {
+      responseId: '',
+      text,
+      reasoning: reasoningText,
+      toolCalls,
+      usage: EMPTY_USAGE,
+    };
+  }
   if (!completed) throw new Error('OpenAI stream ended without a completed response');
 
   return {

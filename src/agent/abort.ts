@@ -8,7 +8,6 @@ export function createAbortController(store: AgentStore) {
 }
 
 export function resetAbortState(store: AgentStore) {
-  store.setAbortConfirmationPending(false);
   store.setAbortRequested(false);
   store.setSteerRequested(false);
 }
@@ -19,12 +18,6 @@ export function handleAbortKeypress(store: AgentStore) {
 
   if (!state.busy || !controller) return false;
 
-  if (!state.abortConfirmationPending) {
-    store.setAbortConfirmationPending(true);
-    return true;
-  }
-
-  store.setAbortConfirmationPending(false);
   store.setAbortRequested(true);
   controller.abort();
   return true;

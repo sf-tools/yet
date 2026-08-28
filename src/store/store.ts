@@ -118,15 +118,9 @@ function buildAgentStore(initialState: AgentState) {
     setAbortController(abortController: AbortController | null) {
       state.abortController = abortController;
       if (abortController === null) {
-        state.abortConfirmationPending = false;
         state.abortRequested = false;
         state.steerRequested = false;
       }
-      return state;
-    },
-
-    setAbortConfirmationPending(abortConfirmationPending: boolean) {
-      state.abortConfirmationPending = abortConfirmationPending;
       return state;
     },
 

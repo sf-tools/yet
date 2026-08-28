@@ -24,9 +24,6 @@ export type RenderContext = {
   width: number;
   height: number;
   cwd: string;
-  spinnerFrame: string;
-  commandSpinnerFrame: string;
-  busySpinnerVerb: string;
   theme: ThemePalette;
   expandPreviews: boolean;
 };

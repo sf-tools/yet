@@ -41,7 +41,6 @@
     "chalk": "^6.0.0",
     "markdown-it": "^15.0.0",
     "openai": "^7.5.0",
-    "ora": "^9.4.1",
     "prismjs": "^1.30.0",
     "yaml": "^2.9.0",
     "fuzzysort": "^4.0.2"
