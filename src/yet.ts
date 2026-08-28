@@ -8,24 +8,52 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
   process.exit(1);
 }
 
-let resumeId = cli.resumeId;
-if (cli.resumePicker) {
+let resumeId: string | undefined;
+if (cli.resume) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    process.stderr.write('--resume without an id requires an interactive terminal.\n');
+    process.stderr.write("'yet resume' requires an interactive terminal.\n");
     process.exit(1);
   }
 
-  const { listYetSessions } = await import('@/agent/session-storage');
-  const sessions = await listYetSessions({ cwd: process.cwd() });
-  if (sessions.length === 0) {
-    process.stderr.write('No saved threads found for this workspace.\n');
-    process.exit(1);
+  const { listYetSessions, resolveYetSessionReference } = await import('@/agent/session-storage');
+  if (cli.resume.reference) {
+    const selection = await resolveYetSessionReference(cli.resume.reference);
+    if (!selection) {
+      process.stderr.write(`No saved session found matching '${cli.resume.reference}'.\n`);
+      process.exit(1);
+    }
+    resumeId = selection.sessionId;
+  } else {
+    const sessions = await listYetSessions({
+      ...(cli.resume.showAll ? {} : { cwd: process.cwd() }),
+    });
+    if (cli.resume.last) {
+      if (!sessions[0]) {
+        process.stderr.write('No saved sessions found.\n');
+        process.exit(1);
+      }
+      resumeId = sessions[0].sessionId;
+    } else {
+      const { selectYetResumeSession } = await import('@/resume-selector');
+      const selection = await selectYetResumeSession({
+        workspacePath: process.cwd(),
+        showAll: cli.resume.showAll,
+        activeSessions: sessions,
+      });
+      if (selection.action === 'cancel') process.exit(0);
+      if (selection.action === 'resume') {
+        if (selection.session.archivedAt) {
+          const { restoreYetSession } = await import('@/agent/session-storage');
+          const restored = await restoreYetSession(selection.session.sessionId);
+          if (!restored) {
+            process.stderr.write(`Could not restore session '${selection.session.sessionId}'.\n`);
+            process.exit(1);
+          }
+        }
+        resumeId = selection.session.sessionId;
+      }
+    }
   }
-
-  const { selectYetResumeSession } = await import('@/resume-selector');
-  const selection = await selectYetResumeSession(sessions, { workspacePath: process.cwd() });
-  if (!selection) process.exit(0);
-  resumeId = selection.sessionId;
 }
 
 const { hydrateStateFromSession, loadYetSession } = await import(
@@ -33,7 +61,7 @@ const { hydrateStateFromSession, loadYetSession } = await import(
 );
 const resumeSession = resumeId ? await loadYetSession(resumeId) : null;
 if (resumeId && !resumeSession) {
-  process.stderr.write(`No saved thread found for id '${resumeId}'.\n`);
+  process.stderr.write(`No saved session found for id '${resumeId}'.\n`);
   process.exit(1);
 }
 

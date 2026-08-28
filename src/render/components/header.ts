@@ -1,8 +1,10 @@
 import chalk from 'chalk';
 import { APP_NAME, APP_VERSION } from '@/config';
+import { formatSessionUsage, sessionUsageIsZero } from '@/agent/session-summary';
 import { LEFT_MARGIN } from '../layout';
 import { blankLine, line, span } from '../primitives';
 
+import type { AgentUsage } from '@/agent/messages';
 import type { Block, RenderContext } from '../types';
 
 export function renderHeader(ctx: RenderContext, yoloMode = false): Block {
@@ -18,6 +20,11 @@ export function renderHeader(ctx: RenderContext, yoloMode = false): Block {
   ];
 }
 
-export function renderExitSummary(resumeCommand: string | null): Block {
-  return resumeCommand ? [line(span(`Continue session with: ${resumeCommand}`))] : [];
+export function renderExitSummary(usage: AgentUsage, resumeCommand: string | null): Block {
+  return [
+    ...(!sessionUsageIsZero(usage) ? [line(span(formatSessionUsage(usage)))] : []),
+    ...(resumeCommand
+      ? [line(span('To continue this session, run '), span(resumeCommand, chalk.cyan))]
+      : []),
+  ];
 }

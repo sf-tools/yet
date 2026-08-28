@@ -24,6 +24,7 @@ import { compactMessages, canCompactMessages } from './compact';
 import { renderSuggestions } from '@/render/components/suggestions';
 import { renderChoicePrompt, renderOutputPreview } from '@/render/components/transcript';
 import { renderConfigPicker } from '@/render/components/config-picker';
+import { renderStatusPanel } from '@/render/components/status-panel';
 import { renderTextPrompt } from '@/render/components/text-prompt';
 import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/components/transcript-overlay';
 import { renderPendingInput } from '@/render/components/pending-input';
@@ -41,6 +42,7 @@ import {
   createTurnContextEvent,
   hydrateStateFromSession,
   loadYetSession,
+  restoreYetSession,
   persistedStateFromAgentState,
   SessionRecorder,
   type ThreadNameSource,
@@ -64,8 +66,16 @@ import { displayImageTokens } from './image-tokens';
 
 import { createRenderContext, frameWidth, renderExitSummary, renderHeader, serializeBlock } from '@/render';
 
-import { getLastAssistantResponse, type AgentImagePart, type AgentMessage, type AgentTextPart } from './messages';
+import {
+  addUsage,
+  getLastAssistantResponse,
+  type AgentImagePart,
+  type AgentMessage,
+  type AgentTextPart,
+  type AgentUsage,
+} from './messages';
 import { runAgentLoop } from './runner';
+import { formatSessionUsage, sessionUsageIsZero } from './session-summary';
 import { BlockStreamPump } from './block-stream';
 import {
   isPotentiallyUnsafeCommand,
@@ -259,6 +269,7 @@ export class AgentApp {
   private pendingChoiceResolver: ((selection: ChoiceSelection | null) => void) | null = null;
   private pendingTextPromptResolver: ((value: string | null) => void) | null = null;
   private configPickerResolver: (() => void) | null = null;
+  private statusPanelResolver: (() => void) | null = null;
   private stdin: TtyReadStream = process.stdin;
   private bracketedPasteActive = false;
   private bracketedPasteBuffer = '';
@@ -463,13 +474,16 @@ export class AgentApp {
     const configPicker = this.state.configPicker
       ? renderConfigPicker(this.state.configPicker, ctx)
       : null;
+    const statusPanel = this.state.statusPanel
+      ? renderStatusPanel(this.state.statusPanel, ctx)
+      : null;
     const textPrompt = this.state.pendingTextPrompt
       ? renderTextPrompt(this.state.pendingTextPrompt, composer, ctx)
       : null;
-    const suggestionLines = choicePrompt || configPicker || textPrompt
+    const suggestionLines = choicePrompt || configPicker || statusPanel || textPrompt
       ? []
       : renderSuggestions(suggestions, this.state.selectedSuggestion, ctx);
-    const footer = choicePrompt || configPicker || textPrompt || suggestionLines.length > 0
+    const footer = choicePrompt || configPicker || statusPanel || textPrompt || suggestionLines.length > 0
       ? []
       : renderFooter(this.state, ctx);
     const statusIndicator = renderStatusIndicator(
@@ -489,7 +503,7 @@ export class AgentApp {
           blankLine(),
         ]
       : [blankLine()];
-    const composerSurface = textPrompt ?? configPicker ?? choicePrompt ?? composer;
+    const composerSurface = textPrompt ?? configPicker ?? statusPanel ?? choicePrompt ?? composer;
     const blocks = body.length > 0
       ? [body, composerLead, composerSurface, suggestionLines, footer]
       : [composerLead, composerSurface, suggestionLines, footer];
@@ -624,13 +638,8 @@ export class AgentApp {
   cleanup(code = 0) {
     if (!this.prepareShutdown()) return;
 
-    if (code === 0) {
-      const resumableSessionId = this.sideConversation?.parentSessionId ?? this.sessionId;
-      const exitLines = serializeBlock(renderExitSummary(this.hasResumableSession() ? `yet --resume=${resumableSessionId}` : null));
-
-      // The user sees the closing summary immediately. Only queued local writes remain afterward.
-      if (exitLines.length > 0) process.stdout.write(`${exitLines.join('\n')}\n`);
-    }
+    const resumableSessionId = this.sideConversation?.parentSessionId ?? this.sessionId;
+    this.printExitSummary(this.hasResumableSession() ? `yet resume ${resumableSessionId}` : null);
 
     void (async () => {
       try {
@@ -642,20 +651,58 @@ export class AgentApp {
     })();
   }
 
-  private async deleteCurrentSession() {
-    if (!this.prepareShutdown()) return;
+  private printExitSummary(resumeCommand: string | null) {
+    const exitLines = serializeBlock(renderExitSummary(this.state.sessionUsage, resumeCommand));
+    if (exitLines.length > 0) process.stdout.write(`${exitLines.join('\n')}\n`);
+  }
 
-    let code = 0;
+  private async reopenCurrentSessionRecorder() {
+    this.sessionRecorder = await SessionRecorder.open({
+      sessionId: this.sessionId,
+      cwd: process.cwd(),
+      rolloutPath: this.sessionRolloutPath,
+      createdAt: this.sessionCreatedAt,
+      title: this.threadTitle ?? undefined,
+      parentSessionId: this.sessionParentId,
+      forkPoint: this.sessionForkPoint,
+    });
+  }
+
+  private async archiveCurrentSession() {
+    if (!this.hasResumableSession())
+      throw new Error('A thread must start before it can be archived.');
+    const recorder = this.sessionRecorder;
+    if (!recorder) throw new Error('session recorder is not available');
+
     try {
-      if (!this.sessionRecorder) throw new Error('session recorder is not available');
-      await this.sessionRecorder.deleteSession();
+      await recorder.archiveSession();
     } catch (error) {
-      code = 1;
-      process.stderr.write(
-        `error: could not delete this session: ${plain(error instanceof Error ? error.message : String(error))}\n`,
-      );
+      if (recorder.isClosed) await this.reopenCurrentSessionRecorder();
+      throw error;
     }
-    process.exit(code);
+
+    this.sessionRecorder = null;
+    if (!this.prepareShutdown()) return;
+    this.printExitSummary(null);
+    process.exit(0);
+  }
+
+  private async deleteCurrentSession() {
+    if (!this.hasResumableSession())
+      throw new Error('A thread must start before it can be deleted.');
+    const recorder = this.sessionRecorder;
+    if (!recorder) throw new Error('session recorder is not available');
+    try {
+      await recorder.deleteSession();
+    } catch (error) {
+      if (recorder.isClosed) await this.reopenCurrentSessionRecorder();
+      throw error;
+    }
+
+    this.sessionRecorder = null;
+    if (!this.prepareShutdown()) return;
+    this.printExitSummary(null);
+    process.exit(0);
   }
 
   handleFatalError(error: unknown, code = 1) {
@@ -955,8 +1002,10 @@ export class AgentApp {
       return;
     }
 
+    const previousSessionId = this.sessionId;
+    const previousSessionUsage = { ...this.state.sessionUsage };
     const session = await loadYetSession(sessionId);
-    if (!session) throw new Error(`No saved thread found for id '${sessionId}'.`);
+    if (!session) throw new Error(`No saved session found for id '${sessionId}'.`);
     const nextRecorder = await SessionRecorder.open({
       sessionId: session.sessionId,
       cwd: session.cwd,
@@ -987,9 +1036,48 @@ export class AgentApp {
     this.preferredComposerColumn = null;
     this.sessionFileBaselines.clear();
     this.store.replaceState(hydrateStateFromSession(session));
+    this.persistHistoryEntries([
+      ...(!sessionUsageIsZero(previousSessionUsage)
+        ? [{ type: 'plain' as const, text: formatSessionUsage(previousSessionUsage) }]
+        : []),
+      { type: 'resume_hint', command: `yet resume ${previousSessionId}` },
+    ]);
     this.resetRenderedScreen();
     this.render();
     this.showFooterNotice(`Switched to ${this.threadTitle ?? 'Untitled thread'}`);
+  }
+
+  private async openResumePicker() {
+    if (this.sideConversationActive)
+      throw new Error("'/resume' is unavailable in side conversations. Press Ctrl+C to return to the main thread first.");
+    if (this.state.abortController)
+      throw new Error("'/resume' is unavailable while a task is running.");
+
+    this.stdin.off('data', this.onStdinData);
+    process.stdout.off('resize', this.render);
+    try {
+      const { selectYetResumeSession } = await import('@/resume-selector');
+      const selection = await selectYetResumeSession({
+        workspacePath: process.cwd(),
+        launchContext: 'in-session',
+        currentSessionId: this.sessionId,
+      });
+      if (selection.action !== 'resume') return;
+      if (selection.session.archivedAt) {
+        const restored = await restoreYetSession(selection.session.sessionId);
+        if (!restored)
+          throw new Error(`Could not restore session '${selection.session.sessionId}'.`);
+      }
+      await this.switchToSession(selection.session.sessionId);
+    } finally {
+      if (!this.state.closed) {
+        if (this.stdin.isTTY) this.stdin.setRawMode(true);
+        this.stdin.on('data', this.onStdinData);
+        process.stdout.on('resize', this.render);
+        if (process.stdout.isTTY) process.stdout.write('\u001b[?25l\u001b[?2004h');
+        this.render();
+      }
+    }
   }
 
   private async forkCurrentSession(name?: string) {
@@ -1016,7 +1104,7 @@ export class AgentApp {
     });
     childState.historyEntries.push({
       type: 'resume_hint',
-      command: `yet --resume=${parentSessionId}`,
+      command: `yet resume ${parentSessionId}`,
     });
 
     const childRecorder = await SessionRecorder.open({
@@ -1838,6 +1926,35 @@ export class AgentApp {
     });
   };
 
+  private openStatusPanel = async (panel: AgentState['statusPanel']) => {
+    if (!panel) throw new Error('status panel is unavailable');
+    if (this.statusPanelResolver) throw new Error('status is already open');
+    if (
+      this.pendingChoiceResolver ||
+      this.pendingApprovalResolver ||
+      this.pendingTextPromptResolver ||
+      this.configPickerResolver
+    ) {
+      throw new Error('another prompt is already open');
+    }
+
+    await new Promise<void>(resolve => {
+      this.statusPanelResolver = resolve;
+      this.store.setStatusPanel(panel);
+      this.render();
+    });
+  };
+
+  private closeStatusPanel() {
+    const resolve = this.statusPanelResolver;
+    if (!resolve || !this.state.statusPanel) return false;
+    this.statusPanelResolver = null;
+    this.store.setStatusPanel(null);
+    this.render();
+    resolve();
+    return true;
+  }
+
   private async closeConfigPicker() {
     const resolve = this.configPickerResolver;
     const picker = this.state.configPicker;
@@ -1885,6 +2002,18 @@ export class AgentApp {
     return true;
   }
 
+  private handleStatusPanelBinding(binding: ReturnType<typeof resolveInputBinding>) {
+    if (!this.state.statusPanel || !binding) return false;
+    if (
+      binding.type === 'submit' ||
+      binding.type === 'escape' ||
+      binding.type === 'interrupt'
+    ) {
+      return this.closeStatusPanel();
+    }
+    return true;
+  }
+
   private persistCompactionNotice(text: string) {
     const lastEntry = this.state.historyEntries[this.state.historyEntries.length - 1];
     if (lastEntry?.type === 'entry' && lastEntry.kind === EntryKind.Meta && lastEntry.text === text) {
@@ -1916,8 +2045,10 @@ export class AgentApp {
         thinkingMode: this.state.thinkingMode,
         fastModeEnabled: this.state.fastModeEnabled,
       });
+      const sessionUsage = addUsage(this.state.sessionUsage, result.usage);
       this.store.replaceMessages(result.messages);
       this.store.setLastUsage(result.usage);
+      this.store.setSessionUsage(sessionUsage);
       const entry = {
         type: 'compacted',
         summary: result.summary,
@@ -1928,7 +2059,7 @@ export class AgentApp {
       this.store.pushHistoryEntry(entry);
       this.recordSessionEvent({
         type: 'compacted',
-        payload: { messages: result.messages, entry, usage: result.usage },
+        payload: { messages: result.messages, entry, usage: result.usage, sessionUsage },
       });
       this.render();
       return true;
@@ -2180,6 +2311,7 @@ export class AgentApp {
     return {
       store: this.store,
       cleanup: code => this.cleanup(code),
+      archiveCurrentSession: () => this.archiveCurrentSession(),
       deleteCurrentSession: () => this.deleteCurrentSession(),
       forkCurrentSession: name => this.forkCurrentSession(name),
       startSideConversation: question => this.startSideConversation(question),
@@ -2192,7 +2324,9 @@ export class AgentApp {
       enqueueSubmission: (text, options) =>
         this.store.enqueueSubmission({ text, planningMode: options?.planningMode }),
       openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
+      openResumePicker: () => this.openResumePicker(),
       openConfigPicker: () => this.openConfigPicker(),
+      openStatusPanel: panel => this.openStatusPanel(panel),
       requestChoice: request => this.requestChoice(request),
       requestTextInput: request => this.requestTextInput(request),
       showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
@@ -2287,9 +2421,12 @@ export class AgentApp {
         return;
       }
 
-      this.store.setBusyStatusText(`/${slashCommand.invocation}`);
-      this.setBusy(true);
-      this.render();
+      const showBusyIndicator = slashCommand.command.showBusyIndicator !== false;
+      if (showBusyIndicator) {
+        this.store.setBusyStatusText(`/${slashCommand.invocation}`);
+        this.setBusy(true);
+        this.render();
+      }
 
       try {
         await slashCommand.command.execute(
@@ -2304,7 +2441,7 @@ export class AgentApp {
       } catch (error: unknown) {
         this.persistEntry(EntryKind.Error, plain(error instanceof Error ? error.message : String(error)));
       } finally {
-        this.setBusy(false);
+        if (showBusyIndicator) this.setBusy(false);
 
         if (previousPlanningMode !== undefined && this.state.planningMode !== previousPlanningMode) {
           this.store.setPlanningMode(previousPlanningMode);
@@ -2375,6 +2512,7 @@ export class AgentApp {
 
       const runtimeMessages = this.getRuntimeMessages();
       const estimatedPromptTokens = estimateMessageTokens(runtimeMessages);
+      const sessionUsageAtTurnStart: AgentUsage = { ...this.state.sessionUsage };
       let completedPromptTokens = 0;
       let completedOutputTokens = 0;
       let completedReasoningTokens = 0;
@@ -2432,6 +2570,15 @@ export class AgentApp {
               completedOutputTokens += event.usage.outputTokens;
               completedReasoningTokens += event.usage.reasoningTokens;
               completedCachedInputTokens += event.usage.cachedInputTokens;
+              const lastUsage = {
+                inputTokens: completedPromptTokens,
+                outputTokens: completedOutputTokens,
+                reasoningTokens: completedReasoningTokens,
+                cachedInputTokens: completedCachedInputTokens,
+              };
+              const sessionUsage = addUsage(sessionUsageAtTurnStart, lastUsage);
+              this.store.setLastUsage(lastUsage);
+              this.store.setSessionUsage(sessionUsage);
               if (event.message) {
                 this.recordSessionEvent({
                   type: 'assistant_message',
@@ -2441,12 +2588,8 @@ export class AgentApp {
               this.recordSessionEvent({
                 type: 'usage_updated',
                 payload: {
-                  usage: {
-                    inputTokens: completedPromptTokens,
-                    outputTokens: completedOutputTokens,
-                    reasoningTokens: completedReasoningTokens,
-                    cachedInputTokens: completedCachedInputTokens,
-                  },
+                  lastUsage,
+                  sessionUsage,
                   totalCost: this.state.totalCost,
                 },
               });
@@ -2539,6 +2682,7 @@ export class AgentApp {
       this.lastRequestId = result.responseId;
       this.store.pushMessages(result.messages);
       this.store.setLastUsage(result.usage);
+      this.store.setSessionUsage(addUsage(sessionUsageAtTurnStart, result.usage));
       this.accountGoalTurn(
         activeGoalCreatedAt,
         (Date.now() - turnStartedAt) / 1_000,
@@ -3116,6 +3260,7 @@ export class AgentApp {
     }
 
     if (await this.handleConfigPickerBinding(binding)) return;
+    if (this.handleStatusPanelBinding(binding)) return;
 
     if (binding.type === 'interrupt') {
       if (this.sideConversationActive && this.state.inputChars.length === 0) {

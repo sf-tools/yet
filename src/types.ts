@@ -63,6 +63,14 @@ export type BackgroundProcessesHistoryEntry = {
   }>;
 };
 
+export type StatusPanelState = {
+  title: string;
+  sections: Array<{
+    title: string;
+    rows: Array<{ label: string; value: string }>;
+  }>;
+};
+
 export type GoalStatus =
   | 'active'
   | 'paused'

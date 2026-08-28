@@ -1,11 +1,13 @@
 import type { AgentMessage } from '@/agent/messages';
 
+const ant = (globalThis as typeof globalThis & { Ant?: { version?: string } }).Ant;
+const antVersion = typeof ant === 'object' && typeof ant.version === 'string' ? ant.version.trim() : '';
+
 const ENVIRONMENT = {
   workspace: process.cwd(),
   date: new Date().toDateString(),
   platform: process.platform,
   architecture: process.arch,
-  runtime: `Ant ${process.version}`,
 };
 
 export const SYSTEM_PROMPT = `You are Yet, a focused coding agent made by The San Francisco Tooling Company.
@@ -15,8 +17,7 @@ Work with the user until their software task is genuinely complete. Be concise, 
 Environment:
 - Workspace: ${ENVIRONMENT.workspace}
 - Date: ${ENVIRONMENT.date}
-- Platform: ${ENVIRONMENT.platform} (${ENVIRONMENT.architecture})
-- Runtime: ${ENVIRONMENT.runtime}
+- Platform: ${ENVIRONMENT.platform} (${ENVIRONMENT.architecture})${antVersion ? `\n- Runtime: Ant ${antVersion}` : ''}
 
 You have these tools:
 - exec_command: inspect the workspace and run commands. Prefer fast, non-interactive commands and use rg for search. Long-running commands return a background session ID.
@@ -42,8 +43,7 @@ Include:
 
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`;
 
-export const COMPACTION_SUMMARY_PREFIX = 'Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:';
+export const COMPACTION_SUMMARY_PREFIX =
+  'Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:';
 
-export const createInitialMessages = (): AgentMessage[] => [
-  { role: 'system', content: SYSTEM_PROMPT },
-];
+export const createInitialMessages = (): AgentMessage[] => [{ role: 'system', content: SYSTEM_PROMPT }];

@@ -1,5 +1,6 @@
 import type { AgentState } from './types';
 import { MODEL, createInitialMessages } from '@/config';
+import { EMPTY_USAGE } from '@/agent/messages';
 
 export const createInitialState = (): AgentState => ({
   messages: createInitialMessages(),
@@ -25,6 +26,7 @@ export const createInitialState = (): AgentState => ({
   livePromptTokens: 0,
   liveOutputTokens: 0,
   liveReasoningTokens: 0,
+  sessionUsage: { ...EMPTY_USAGE },
   totalCost: 0,
   abortController: null,
   abortRequested: false,
@@ -34,6 +36,7 @@ export const createInitialState = (): AgentState => ({
   pendingChoiceIndex: 0,
   pendingTextPrompt: null,
   configPicker: null,
+  statusPanel: null,
   footerNotice: null,
   sessionFileChanges: [],
   permissionMode: 'ask',

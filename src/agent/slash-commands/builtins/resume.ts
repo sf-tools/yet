@@ -1,6 +1,6 @@
 import {
-  listYetSessions,
   listYetSessionsSync,
+  resolveYetSessionReference,
   type YetSessionListEntry,
 } from '@/agent/session-storage';
 import type { SlashCommand, SlashCommandArgumentSuggestion } from '../types';
@@ -40,44 +40,24 @@ function createSessionSuggestion(
   };
 }
 
-async function resolveTargetSession(requested: string, currentSessionId: string) {
-  const sessions = (await listYetSessions({ cwd: process.cwd() })).filter(
-    session => session.sessionId !== currentSessionId,
-  );
-  const exact = sessions.find(session => session.sessionId === requested);
-  if (exact) return exact;
-
-  const normalizedRequested = requested.trim().toLowerCase();
-  const prefixMatches = sessions.filter(session =>
-    session.sessionId.toLowerCase().startsWith(normalizedRequested),
-  );
-
-  if (prefixMatches.length === 1) return prefixMatches[0];
-  if (prefixMatches.length > 1)
-    throw new Error(`multiple saved threads match '${requested}'`);
-
-  throw new Error(`No saved thread found for id '${requested}'.`);
-}
-
 export const resumeSlashCommand: SlashCommand = {
   name: 'resume',
-  description: 'Resume another saved thread from this workspace.',
+  description: 'Resume another saved session.',
+  showBusyIndicator: false,
   argumentSuggestions: ({ getSessionId }) =>
     listOtherWorkspaceSessions(getSessionId()).map(createSessionSuggestion),
-  showArgumentSuggestionsOnExactInvocation: true,
-  async execute({ getSessionId, openCommandArgumentPicker, switchToSession }, args) {
+  async execute({ getSessionId, openResumePicker, switchToSession }, args) {
     if (args.argv.length > 1) throw new Error(`/${args.invocation} accepts at most one argument`);
 
     const requested = args.argv[0];
     if (!requested) {
-      if (listOtherWorkspaceSessions(getSessionId()).length === 0) {
-        throw new Error('no other saved threads found for this workspace');
-      }
-      openCommandArgumentPicker('resume');
+      await openResumePicker();
       return;
     }
 
-    const target = await resolveTargetSession(requested, getSessionId());
+    const target = await resolveYetSessionReference(requested);
+    if (!target) throw new Error(`No saved session found matching '${requested}'.`);
+    if (target.sessionId === getSessionId()) throw new Error('that session is already open');
     await switchToSession(target.sessionId);
   },
 };

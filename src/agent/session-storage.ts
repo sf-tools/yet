@@ -20,6 +20,7 @@ import type {
   AgentToolResultMessage,
   AgentUsage,
 } from '@/agent/messages';
+import { EMPTY_USAGE } from '@/agent/messages';
 import { createInitialState } from '@/store/state';
 import type { AgentState } from '@/store/types';
 import { EntryKind, type HistoryEntry, type ToolHistoryEntry } from '@/types';
@@ -30,6 +31,7 @@ export type PersistedSessionState = {
   inputChars: string[];
   cursor: number;
   totalCost: number;
+  sessionUsage: AgentUsage;
   currentModel: string;
   thinkingMode: AgentState['thinkingMode'];
   fastModeEnabled: boolean;
@@ -43,10 +45,12 @@ export type PersistedSessionState = {
 export type YetSessionListEntry = {
   sessionId: string;
   cwd: string;
+  createdAt: string;
   savedAt: string;
   title?: string;
   preview?: string;
   rolloutPath?: string;
+  archivedAt?: string;
   parentSessionId?: string;
   forkPoint?: number;
 };
@@ -59,6 +63,7 @@ export type LoadedYetSession = {
   updatedAt: string;
   name?: string;
   rolloutPath: string;
+  archivedAt?: string;
   parentSessionId?: string;
   forkPoint?: number;
   state: PersistedSessionState;
@@ -115,7 +120,7 @@ export type YetSessionEvent =
   | { type: 'transcript_entry'; payload: { entries: HistoryEntry[] } }
   | {
       type: 'usage_updated';
-      payload: { usage: AgentUsage; totalCost: number };
+      payload: { lastUsage: AgentUsage; sessionUsage: AgentUsage; totalCost: number };
     }
   | {
       type: 'compacted';
@@ -123,6 +128,7 @@ export type YetSessionEvent =
         messages: AgentMessage[];
         entry: Extract<HistoryEntry, { type: 'compacted' }>;
         usage: AgentUsage;
+        sessionUsage: AgentUsage;
       };
     };
 
@@ -142,6 +148,7 @@ export type SessionIndexEntry = {
   model?: string;
   lastOrdinal: number;
   rolloutBytes?: number;
+  archivedAt?: string;
   parentSessionId?: string;
   forkPoint?: number;
 };
@@ -151,6 +158,7 @@ type SessionMetadata = Omit<SessionIndexEntry, 'rolloutPath'>;
 const DEFAULT_YET_HOME = join(homedir(), '.yet');
 const SESSION_INDEX_FILE = 'session_index.jsonl';
 const SESSION_DIRECTORY = 'sessions';
+const ARCHIVED_SESSION_DIRECTORY = 'archived_sessions';
 const LOCK_DIRECTORY = 'locks';
 
 function normalizeWhitespace(text: string) {
@@ -171,6 +179,7 @@ export function persistedStateFromAgentState(
     inputChars: keepDraft ? [...state.inputChars] : [],
     cursor: keepDraft ? state.cursor : 0,
     totalCost: state.totalCost,
+    sessionUsage: cloneJson(state.sessionUsage),
     currentModel: state.currentModel,
     thinkingMode: state.thinkingMode,
     fastModeEnabled: state.fastModeEnabled,
@@ -229,6 +238,7 @@ export function hydratePersistedState(persisted: PersistedSessionState): AgentSt
     showThinking: persisted.showThinking ?? initial.showThinking,
     goal: persisted.goal ? cloneJson(persisted.goal) : null,
     thinkingMode: persisted.thinkingMode,
+    sessionUsage: cloneJson(persisted.sessionUsage ?? EMPTY_USAGE),
     totalCost: persisted.totalCost,
     sideConversation: null,
   };
@@ -255,10 +265,11 @@ function upsertToolEntry(entries: HistoryEntry[], entry: ToolHistoryEntry) {
   else entries[index] = entry;
 }
 
-function setUsage(state: AgentState, usage: AgentUsage) {
-  state.lastPromptTokens = usage.inputTokens;
-  state.lastOutputTokens = usage.outputTokens;
-  state.lastReasoningTokens = usage.reasoningTokens;
+function setUsage(state: AgentState, lastUsage: AgentUsage, sessionUsage: AgentUsage) {
+  state.lastPromptTokens = lastUsage.inputTokens;
+  state.lastOutputTokens = lastUsage.outputTokens;
+  state.lastReasoningTokens = lastUsage.reasoningTokens;
+  state.sessionUsage = cloneJson(sessionUsage);
 }
 
 function applyEvent(state: AgentState, event: YetSessionEvent) {
@@ -294,13 +305,13 @@ function applyEvent(state: AgentState, event: YetSessionEvent) {
       upsertToolEntry(state.historyEntries, event.payload.entry);
       break;
     case 'usage_updated':
-      setUsage(state, event.payload.usage);
+      setUsage(state, event.payload.lastUsage, event.payload.sessionUsage);
       state.totalCost = event.payload.totalCost;
       break;
     case 'compacted':
       state.messages.splice(0, state.messages.length, ...event.payload.messages);
       state.historyEntries.push(event.payload.entry);
-      setUsage(state, event.payload.usage);
+      setUsage(state, event.payload.usage, event.payload.sessionUsage);
       break;
   }
 }
@@ -404,6 +415,7 @@ function metadataFromLoadedSession(session: LoadedYetSession, rolloutPath: strin
     ...(preview ? { preview } : {}),
     model: session.state.currentModel,
     lastOrdinal: -1,
+    ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
     ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
     ...(typeof session.forkPoint === 'number' ? { forkPoint: session.forkPoint } : {}),
   };
@@ -525,7 +537,11 @@ async function reconcileIndex(
       return path ? [[resolve(path), entry] as const] : [];
     }),
   );
-  for (const path of await findRolloutPaths(join(yetHome, SESSION_DIRECTORY))) {
+  const roots = [
+    { path: join(yetHome, SESSION_DIRECTORY), archived: false },
+    { path: join(yetHome, ARCHIVED_SESSION_DIRECTORY), archived: true },
+  ];
+  for (const root of roots) for (const path of await findRolloutPaths(root.path)) {
     try {
       const existing = indexedPaths.get(resolve(path));
       const rolloutBytes = statSync(path).size;
@@ -533,6 +549,7 @@ async function reconcileIndex(
       const lines = await readYetRollout(path);
       const loaded = loadedSessionFromLines(lines, path);
       if (!loaded) continue;
+      if (root.archived) loaded.archivedAt = existing?.archivedAt ?? loaded.updatedAt;
       const entry = metadataFromLoadedSession(loaded, relative(yetHome, path));
       entry.lastOrdinal = lines.at(-1)?.ordinal ?? -1;
       entry.rolloutBytes = rolloutBytes;
@@ -565,7 +582,11 @@ function readIndexSync(yetHome: string) {
       return path ? [[resolve(path), entry] as const] : [];
     }),
   );
-  for (const path of findRolloutPathsSync(join(yetHome, SESSION_DIRECTORY))) {
+  const roots = [
+    { path: join(yetHome, SESSION_DIRECTORY), archived: false },
+    { path: join(yetHome, ARCHIVED_SESSION_DIRECTORY), archived: true },
+  ];
+  for (const root of roots) for (const path of findRolloutPathsSync(root.path)) {
     try {
       const existing = indexedPaths.get(resolve(path));
       const rolloutBytes = statSync(path).size;
@@ -573,6 +594,7 @@ function readIndexSync(yetHome: string) {
       const lines = readYetRolloutSync(path);
       const loaded = loadedSessionFromLines(lines, path);
       if (!loaded) continue;
+      if (root.archived) loaded.archivedAt = existing?.archivedAt ?? loaded.updatedAt;
       const entry = metadataFromLoadedSession(loaded, relative(yetHome, path));
       entry.lastOrdinal = lines.at(-1)?.ordinal ?? -1;
       entry.rolloutBytes = rolloutBytes;
@@ -590,10 +612,12 @@ function listEntriesFromIndex(entries: Map<string, SessionIndexEntry>, yetHome: 
       {
         sessionId: entry.sessionId,
         cwd: entry.cwd,
+        createdAt: entry.createdAt,
         savedAt: entry.updatedAt,
         ...(entry.name ? { title: entry.name } : {}),
         ...(entry.preview ? { preview: entry.preview } : {}),
         rolloutPath: path,
+        ...(entry.archivedAt ? { archivedAt: entry.archivedAt } : {}),
         ...(entry.parentSessionId ? { parentSessionId: entry.parentSessionId } : {}),
         ...(typeof entry.forkPoint === 'number' ? { forkPoint: entry.forkPoint } : {}),
       } satisfies YetSessionListEntry,
@@ -601,30 +625,73 @@ function listEntriesFromIndex(entries: Map<string, SessionIndexEntry>, yetHome: 
   });
 }
 
-function filterAndSortEntries(entries: YetSessionListEntry[], cwd?: string) {
+function filterAndSortEntries(entries: YetSessionListEntry[], cwd?: string, archived = false) {
   const targetCwd = cwd ? resolve(cwd) : null;
   return entries
+    .filter(entry => Boolean(entry.archivedAt) === archived)
     .filter(entry => !targetCwd || resolve(entry.cwd) === targetCwd)
     .sort((left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt));
 }
 
 export async function listYetSessions(
-  options: { cwd?: string; yetHome?: string } = {},
+  options: { cwd?: string; yetHome?: string; archived?: boolean } = {},
 ): Promise<YetSessionListEntry[]> {
   const yetHome = options.yetHome ?? DEFAULT_YET_HOME;
   return filterAndSortEntries(
     listEntriesFromIndex(await readIndex(yetHome), yetHome),
     options.cwd,
+    options.archived,
   );
 }
 
 export function listYetSessionsSync(
-  options: { cwd?: string; yetHome?: string } = {},
+  options: { cwd?: string; yetHome?: string; archived?: boolean } = {},
 ): YetSessionListEntry[] {
   const yetHome = options.yetHome ?? DEFAULT_YET_HOME;
   return filterAndSortEntries(
     listEntriesFromIndex(readIndexSync(yetHome), yetHome),
     options.cwd,
+    options.archived,
+  );
+}
+
+function normalizeSessionReference(value: string) {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function resolveYetSessionReferenceFromList(
+  sessions: YetSessionListEntry[],
+  reference: string,
+) {
+  const normalized = normalizeSessionReference(reference);
+  if (!normalized) return null;
+
+  const exactId = sessions.find(session => session.sessionId.toLowerCase() === normalized);
+  if (exactId) return exactId;
+
+  const idPrefixMatches = sessions.filter(session =>
+    session.sessionId.toLowerCase().startsWith(normalized),
+  );
+  if (idPrefixMatches.length === 1) return idPrefixMatches[0];
+  if (idPrefixMatches.length > 1)
+    throw new Error(`multiple saved sessions match '${reference}'`);
+
+  const nameMatches = sessions.filter(
+    session => session.title && normalizeSessionReference(session.title) === normalized,
+  );
+  if (nameMatches.length === 1) return nameMatches[0];
+  if (nameMatches.length > 1)
+    throw new Error(`multiple saved sessions are named '${reference}'`);
+  return null;
+}
+
+export async function resolveYetSessionReference(
+  reference: string,
+  options: { yetHome?: string; archived?: boolean } = {},
+) {
+  return resolveYetSessionReferenceFromList(
+    await listYetSessions({ yetHome: options.yetHome, archived: options.archived }),
+    reference,
   );
 }
 
@@ -850,6 +917,10 @@ export class SessionRecorder {
     return this.nextOrdinal - 1;
   }
 
+  get isClosed() {
+    return this.closed;
+  }
+
   record(event: Exclude<YetSessionEvent, { type: 'session_meta' }>) {
     if (this.closed) throw new Error('cannot record an event after the session writer is closed');
     this.pendingEvents.push(cloneJson(event));
@@ -964,42 +1035,92 @@ export class SessionRecorder {
     }
   }
 
-  async deleteSession() {
-    await this.close();
+  private async sealForLifecycleMutation() {
+    if (this.closed) throw new Error('session writer is already closed');
+    await this.flush();
+    this.closed = true;
+    await this.resetHandle();
+  }
 
-    const sessionsRoot = resolve(this.yetHome, SESSION_DIRECTORY);
-    const rolloutPath = resolve(this.rolloutPath);
-    const relativePath = relative(sessionsRoot, rolloutPath);
-    if (
-      relativePath.startsWith('..') ||
-      isAbsolute(relativePath) ||
-      !basename(rolloutPath).includes(this.sessionId)
-    ) {
-      throw new Error(`refusing to delete rollout outside Yet sessions: ${this.rolloutPath}`);
-    }
+  async archiveSession() {
+    await this.sealForLifecycleMutation();
 
     try {
-      await unlink(rolloutPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const sessionsRoot = resolve(this.yetHome, SESSION_DIRECTORY);
+      const rolloutPath = resolve(this.rolloutPath);
+      const relativePath = relative(sessionsRoot, rolloutPath);
+      if (
+        relativePath.startsWith('..') ||
+        isAbsolute(relativePath) ||
+        !basename(rolloutPath).includes(this.sessionId)
+      ) {
+        throw new Error(`refusing to archive rollout outside Yet sessions: ${this.rolloutPath}`);
+      }
+
+      const archiveRoot = join(this.yetHome, ARCHIVED_SESSION_DIRECTORY);
+      const archivedPath = join(archiveRoot, basename(rolloutPath));
+      await mkdir(archiveRoot, { recursive: true });
+      if (existsSync(archivedPath))
+        throw new Error(`an archived rollout already exists for session '${this.sessionId}'`);
+      await rename(rolloutPath, archivedPath);
+
+      const archivedAt = new Date().toISOString();
+      const entry: SessionIndexEntry = {
+        ...this.metadata,
+        rolloutPath: relative(this.yetHome, archivedPath),
+        rolloutBytes: statSync(archivedPath).size,
+        archivedAt,
+      };
+      await appendIndexEntry(entry, this.yetHome).catch(() => {});
+      return archivedPath;
+    } finally {
+      await releaseSessionLock(this.lock);
     }
-    await removeIndexEntry(this.sessionId, this.yetHome);
+  }
+
+  async deleteSession() {
+    await this.sealForLifecycleMutation();
+
+    try {
+      const sessionsRoot = resolve(this.yetHome, SESSION_DIRECTORY);
+      const rolloutPath = resolve(this.rolloutPath);
+      const relativePath = relative(sessionsRoot, rolloutPath);
+      if (
+        relativePath.startsWith('..') ||
+        isAbsolute(relativePath) ||
+        !basename(rolloutPath).includes(this.sessionId)
+      ) {
+        throw new Error(`refusing to delete rollout outside Yet sessions: ${this.rolloutPath}`);
+      }
+
+      try {
+        await unlink(rolloutPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      await removeIndexEntry(this.sessionId, this.yetHome).catch(() => {});
+    } finally {
+      await releaseSessionLock(this.lock);
+    }
   }
 }
 
 export async function loadYetSession(
   sessionId: string,
-  options: { yetHome?: string } = {},
+  options: { yetHome?: string; includeArchived?: boolean } = {},
 ): Promise<LoadedYetSession | null> {
   const yetHome = options.yetHome ?? DEFAULT_YET_HOME;
   const entries = await readIndex(yetHome);
   const entry = entries.get(sessionId);
-  if (entry) {
+  if (entry && (options.includeArchived || !entry.archivedAt)) {
     const path = rolloutPathFromIndex(entry, yetHome);
     if (path) {
       try {
         const loaded = loadedSessionFromLines(await readYetRollout(path), path);
-        if (loaded?.sessionId === sessionId) return loaded;
+        if (loaded?.sessionId === sessionId) {
+          if (entry.archivedAt) loaded.archivedAt = entry.archivedAt;
+          return loaded;
+        }
       } catch {}
     }
   }
@@ -1012,4 +1133,50 @@ export async function loadYetSession(
     } catch {}
   }
   return null;
+}
+
+export async function restoreYetSession(
+  sessionId: string,
+  options: { yetHome?: string } = {},
+): Promise<LoadedYetSession | null> {
+  const yetHome = options.yetHome ?? DEFAULT_YET_HOME;
+  const entries = await readIndex(yetHome);
+  const entry = entries.get(sessionId);
+  if (!entry?.archivedAt) return loadYetSession(sessionId, { yetHome });
+
+  const archivedPath = rolloutPathFromIndex(entry, yetHome);
+  if (!archivedPath) throw new Error(`invalid archived rollout path for session '${sessionId}'`);
+  const archiveRoot = resolve(yetHome, ARCHIVED_SESSION_DIRECTORY);
+  const resolvedArchivedPath = resolve(archivedPath);
+  const archivedRelativePath = relative(archiveRoot, resolvedArchivedPath);
+  if (
+    archivedRelativePath.startsWith('..') ||
+    isAbsolute(archivedRelativePath) ||
+    !basename(resolvedArchivedPath).includes(sessionId)
+  ) {
+    throw new Error(`refusing to restore rollout outside Yet archives: ${archivedPath}`);
+  }
+
+  const restoredPath = newRolloutPath(sessionId, entry.createdAt, yetHome);
+  const lock = await acquireSessionLock(sessionId, yetHome);
+  try {
+    await mkdir(dirname(restoredPath), { recursive: true });
+    if (existsSync(restoredPath))
+      throw new Error(`an active rollout already exists for session '${sessionId}'`);
+    await rename(resolvedArchivedPath, restoredPath);
+
+    const { archivedAt: _archivedAt, ...activeMetadata } = entry;
+    await appendIndexEntry(
+      {
+        ...activeMetadata,
+        rolloutPath: relative(yetHome, restoredPath),
+        rolloutBytes: statSync(restoredPath).size,
+      },
+      yetHome,
+    ).catch(() => {});
+  } finally {
+    await releaseSessionLock(lock);
+  }
+
+  return loadYetSession(sessionId, { yetHome });
 }

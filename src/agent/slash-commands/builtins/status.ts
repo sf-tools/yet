@@ -1,27 +1,19 @@
-import { spawnSync } from 'node:child_process';
-
 import { APP_RELEASE_DATE_ISO, APP_VERSION } from '@/config';
 import { resolvePermissionProfile } from '@/permissions';
 import type { SlashCommand } from '../types';
 
-function formatRows(rows: Array<[string, string]>) {
-  const width = rows.reduce((max, [key]) => Math.max(max, key.length), 0);
-  return rows.map(([key, value]) => `${key.padEnd(width)}  ${value}`).join('\n');
-}
-
 function antVersion() {
-  const result = spawnSync('ant', ['--version-raw'], {
-    shell: true,
-    timeout: 500,
-  });
-  const version = String(result.stdout ?? '').trim();
-  return version ? `v${version}` : 'n/a';
+  const ant = (globalThis as typeof globalThis & { Ant?: { version?: string } }).Ant;
+  return typeof ant === 'object' && typeof ant.version === 'string'
+    ? ant.version.trim() || null
+    : null;
 }
 
 export const statusSlashCommand: SlashCommand = {
   name: 'status',
   description: 'Show runtime, session, model, permission, and tool status.',
-  execute(context, args) {
+  showBusyIndicator: false,
+  async execute(context, args) {
     if (args.argv.length > 0) throw new Error(`/${args.invocation} does not accept arguments`);
 
     const state = context.store.getState();
@@ -33,37 +25,56 @@ export const statusSlashCommand: SlashCommand = {
     const permissionProfile = resolvePermissionProfile(state.permissionMode, {
       readOnly: state.planningMode,
     });
-    const rows: Array<[string, string]> = [
-      ['app', 'Yet'],
-      ['version', APP_VERSION],
-      ['released', APP_RELEASE_DATE_ISO],
-      ['node', process.version],
-      ['ant', antVersion()],
-      ['platform', `${process.platform} ${process.arch}`],
-      ['cwd', process.cwd()],
-      ['model', state.currentModel],
-      ['effort', state.thinkingMode],
-      ['fast', state.fastModeEnabled ? 'on' : 'off'],
-      ['permissions', state.permissionMode],
-      ['sandbox', permissionProfile.sandboxMode],
-      ['approval policy', permissionProfile.approvalPolicy],
-      ['reviewer', permissionProfile.approvalsReviewer],
-      ['planning', state.planningMode ? 'on' : 'off'],
-      ['auto compact', state.autoCompactEnabled ? 'on' : 'off'],
-      ['show thinking', state.showThinking ? 'on' : 'off'],
-      ['tools', tools || 'none'],
-      ['conversation id', context.getSessionId()],
-      ['request id', context.getLastRequestId() ?? 'n/a'],
-      ['session title', context.getThreadTitle() ?? 'untitled'],
-      ...(lineage.side ? [['session kind', 'side conversation'] as [string, string]] : []),
-      ...(lineage.parentSessionId
-        ? [['forked from', lineage.parentSessionId] as [string, string]]
-        : []),
-      ...(typeof lineage.forkPoint === 'number'
-        ? [['fork point', String(lineage.forkPoint)] as [string, string]]
-        : []),
-    ];
-
-    context.printEntries([{ type: 'plain', text: formatRows(rows) }]);
+    const runtimeAntVersion = antVersion();
+    await context.openStatusPanel({
+      title: 'Yet status',
+      sections: [
+          {
+            title: 'Runtime',
+            rows: [
+              { label: 'Yet', value: APP_VERSION },
+              { label: 'Released', value: APP_RELEASE_DATE_ISO },
+              ...(runtimeAntVersion ? [{ label: 'Ant', value: runtimeAntVersion }] : []),
+              { label: 'Platform', value: `${process.platform} ${process.arch}` },
+              { label: 'Folder', value: process.cwd() },
+            ],
+          },
+          {
+            title: 'Agent',
+            rows: [
+              { label: 'Model', value: state.currentModel },
+              { label: 'Effort', value: state.thinkingMode },
+              { label: 'Fast mode', value: state.fastModeEnabled ? 'on' : 'off' },
+              { label: 'Permissions', value: state.permissionMode },
+              { label: 'Sandbox', value: permissionProfile.sandboxMode },
+              { label: 'Approvals', value: permissionProfile.approvalPolicy },
+              { label: 'Reviewer', value: permissionProfile.approvalsReviewer },
+              { label: 'Planning', value: state.planningMode ? 'on' : 'off' },
+              { label: 'Tools', value: tools || 'none' },
+            ],
+          },
+          {
+            title: 'Session',
+            rows: [
+              { label: 'Title', value: context.getThreadTitle() ?? 'untitled' },
+              { label: 'ID', value: context.getSessionId() },
+              { label: 'Request', value: context.getLastRequestId() ?? 'n/a' },
+              ...(lineage.side
+                ? [{ label: 'Kind', value: 'side conversation' }]
+                : []),
+              ...(lineage.parentSessionId
+                ? [{ label: 'Forked from', value: lineage.parentSessionId }]
+                : []),
+              ...(typeof lineage.forkPoint === 'number'
+                ? [{ label: 'Fork point', value: String(lineage.forkPoint) }]
+                : []),
+              {
+                label: 'Behavior',
+                value: `auto compact ${state.autoCompactEnabled ? 'on' : 'off'} · thinking ${state.showThinking ? 'on' : 'off'}`,
+              },
+            ],
+          },
+      ],
+    });
   },
 };

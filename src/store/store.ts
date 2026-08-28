@@ -1,7 +1,7 @@
 import { createInitialState } from './state';
 import { imageTokenRangeAt } from '@/agent/image-tokens';
 
-import type { AgentMessage } from '@/agent/messages';
+import type { AgentMessage, AgentUsage } from '@/agent/messages';
 import type {
   ApprovalRequest,
   ChoiceRequest,
@@ -191,6 +191,11 @@ function buildAgentStore(initialState: AgentState) {
 
     setConfigPicker(configPicker: AgentState['configPicker']) {
       state.configPicker = configPicker;
+      return state;
+    },
+
+    setStatusPanel(statusPanel: AgentState['statusPanel']) {
+      state.statusPanel = statusPanel;
       return state;
     },
 
@@ -431,6 +436,11 @@ function buildAgentStore(initialState: AgentState) {
       state.livePromptTokens = 0;
       state.liveOutputTokens = 0;
       state.liveReasoningTokens = 0;
+      return state;
+    },
+
+    setSessionUsage(usage: AgentUsage) {
+      state.sessionUsage = { ...usage };
       return state;
     },
 

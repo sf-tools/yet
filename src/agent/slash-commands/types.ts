@@ -1,7 +1,7 @@
 import type { ThinkingMode } from '@/config';
 import type { PermissionMode } from '@/permissions';
 import type { AgentStore } from '@/store';
-import type { ChoiceRequest, ChoiceSelection, HistoryEntry, TextPromptRequest, ThreadGoal } from '@/types';
+import type { ChoiceRequest, ChoiceSelection, HistoryEntry, StatusPanelState, TextPromptRequest, ThreadGoal } from '@/types';
 import type { BackgroundTerminalSummary } from '@/agent/background-terminals';
 
 export type SlashCommandArgs = {
@@ -14,6 +14,7 @@ export type SlashCommandArgs = {
 export type SlashCommandContext = {
   store: AgentStore;
   cleanup(code?: number): void;
+  archiveCurrentSession(): Promise<void>;
   deleteCurrentSession(): Promise<void>;
   forkCurrentSession(name?: string): Promise<void>;
   startSideConversation(question?: string): Promise<void>;
@@ -25,7 +26,9 @@ export type SlashCommandContext = {
   setPlanningMode(enabled: boolean): void;
   enqueueSubmission(text: string, options?: { planningMode?: boolean }): void;
   openCommandArgumentPicker(commandName: string): void;
+  openResumePicker(): Promise<void>;
   openConfigPicker(): Promise<void>;
+  openStatusPanel(panel: StatusPanelState): Promise<void>;
   requestChoice(request: ChoiceRequest): Promise<ChoiceSelection | null>;
   requestTextInput(request: TextPromptRequest): Promise<string | null>;
   showFooterNotice(text: string, durationMs?: number): void;
@@ -77,6 +80,7 @@ export type SlashCommand = {
     | readonly SlashCommandArgumentSuggestion[]
     | ((context: SlashCommandSuggestionContext) => readonly SlashCommandArgumentSuggestion[]);
   showArgumentSuggestionsOnExactInvocation?: boolean;
+  showBusyIndicator?: boolean;
   isAvailable?(context: SlashCommandSuggestionContext): boolean;
   unavailableDetail?(context: SlashCommandSuggestionContext): string;
   execute(context: SlashCommandContext, args: SlashCommandArgs): Promise<void> | void;

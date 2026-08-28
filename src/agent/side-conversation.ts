@@ -4,6 +4,7 @@ import {
 } from './session-storage';
 
 import type { AgentState } from '@/store';
+import { EMPTY_USAGE } from './messages';
 
 export const SIDE_BOUNDARY_PROMPT = `Side conversation boundary.
 
@@ -56,6 +57,7 @@ export function createSideConversationState(
   const side = hydratePersistedState(persistedStateFromAgentState(state));
   side.messages.push({ role: 'user', content: SIDE_BOUNDARY_PROMPT });
   side.historyEntries = [];
+  side.sessionUsage = { ...EMPTY_USAGE };
   side.totalCost = 0;
   side.sessionFileChanges = [];
   side.sideConversation = {

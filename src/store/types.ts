@@ -1,4 +1,4 @@
-import type { AgentMessage } from '@/agent/messages';
+import type { AgentMessage, AgentUsage } from '@/agent/messages';
 import type { ThinkingMode } from '@/config';
 import type { PermissionMode } from '@/permissions';
 import type {
@@ -7,6 +7,7 @@ import type {
   ConfigPickerState,
   FileChange,
   HistoryEntry,
+  StatusPanelState,
   TextPromptRequest,
   ThreadGoal,
 } from '@/types';
@@ -53,6 +54,7 @@ export type AgentState = {
   livePromptTokens: number;
   liveOutputTokens: number;
   liveReasoningTokens: number;
+  sessionUsage: AgentUsage;
   totalCost: number;
   abortController: AbortController | null;
   abortRequested: boolean;
@@ -62,6 +64,7 @@ export type AgentState = {
   pendingChoiceIndex: number;
   pendingTextPrompt: TextPromptRequest | null;
   configPicker: ConfigPickerState | null;
+  statusPanel: StatusPanelState | null;
   footerNotice: string | null;
   sessionFileChanges: FileChange[];
   permissionMode: PermissionMode;

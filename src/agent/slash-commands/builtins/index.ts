@@ -1,3 +1,4 @@
+import { archiveSlashCommand } from './archive';
 import { compactSlashCommand } from './compact';
 import { configSlashCommand } from './config';
 import { copySlashCommand } from './copy';
@@ -34,6 +35,7 @@ export const builtinSlashCommands = [
   forkSlashCommand,
   btwSlashCommand,
   renameSlashCommand,
+  archiveSlashCommand,
   deleteSlashCommand,
   exitSlashCommand,
 ];

@@ -18,8 +18,11 @@ import { isPermissionMode, type PermissionMode } from '@/permissions';
 export type StartCliResult = {
   kind: 'start';
   prompt?: string;
-  resumeId?: string;
-  resumePicker?: boolean;
+  resume?: {
+    reference?: string;
+    last: boolean;
+    showAll: boolean;
+  };
   model?: string;
   thinkingMode?: ThinkingMode;
   permissionMode?: PermissionMode;
@@ -62,17 +65,30 @@ function printHelp() {
     'Your best work is yet to come.',
     '',
     `${chalk.bold('Usage:')} ${chalk.white(`${COMMAND_NAME} [options] [prompt]`)}`,
+    `       ${chalk.white(`${COMMAND_NAME} resume [session] [options]`)}`,
+    '',
+    chalk.bold('Commands:'),
+    '',
+    formatRows([
+      ['resume [session]', 'Resume a saved session; opens the picker when omitted'],
+    ]),
     '',
     chalk.bold('Options:'),
     '',
     formatRows([
       ['-h, --help', 'Show help'],
       ['-v, --version', 'Show version'],
-      ['--resume [id]', 'Resume a saved session, or pick one from this workspace'],
       ['-m, --model <id>', 'Select one of the supported models below'],
       ['--effort <level>', 'Set reasoning effort: auto, none, low, medium, high, xhigh, max'],
       ['--permissions <mode>', 'Set permissions for this run: ask, auto, full'],
       ['--yolo', 'Run with Full Access; bypass approvals and the workspace sandbox'],
+    ]),
+    '',
+    chalk.bold('Resume options:'),
+    '',
+    formatRows([
+      ['--last', 'Resume the most recently updated session without opening the picker'],
+      ['--all', 'Include sessions from every folder'],
     ]),
     '',
     chalk.bold('Models:'),
@@ -96,6 +112,8 @@ function printHelp() {
       ['/fork [name]', 'Fork the current chat'],
       ['/btw [question]', 'Start an ephemeral side conversation'],
       ['/rename', 'Rename the current session'],
+      ['/archive', 'Archive the current session and exit'],
+      ['/delete', 'Permanently delete the current session and exit'],
       ['!<command>', 'Run a command through the active permission policy'],
       ['@path/to/file', 'Attach a file to your prompt'],
       ['/exit', 'Quit Yet'],
@@ -135,27 +153,26 @@ export function handleCliArgs(argv = process.argv.slice(2)): CliResult {
 
   const result: StartCliResult = { kind: 'start' };
   const promptParts: string[] = [];
+  const resumeCommand = argv[0] === 'resume';
+  let resumeReference: string | undefined;
+  let resumeLast = false;
+  let resumeShowAll = false;
 
   try {
-    for (let index = 0; index < argv.length; index += 1) {
+    for (let index = resumeCommand ? 1 : 0; index < argv.length; index += 1) {
       const arg = argv[index];
       if (arg === '--') {
         promptParts.push(...argv.slice(index + 1));
         break;
       }
-      if (arg === '--resume') {
-        const next = argv[index + 1];
-        if (!next || next.startsWith('-')) result.resumePicker = true;
-        else {
-          result.resumeId = next;
-          index += 1;
-        }
+      if (arg === '--last') {
+        if (!resumeCommand) throw new Error("'--last' can only be used with 'yet resume'.");
+        resumeLast = true;
         continue;
       }
-      if (arg.startsWith('--resume=')) {
-        const value = arg.slice('--resume='.length);
-        if (value) result.resumeId = value;
-        else result.resumePicker = true;
+      if (arg === '--all') {
+        if (!resumeCommand) throw new Error("'--all' can only be used with 'yet resume'.");
+        resumeShowAll = true;
         continue;
       }
       if (arg === '-m' || arg === '--model') {
@@ -184,7 +201,15 @@ export function handleCliArgs(argv = process.argv.slice(2)): CliResult {
         continue;
       }
       if (arg.startsWith('-')) throw new Error(`Invalid argument '${arg}'.`);
-      promptParts.push(arg);
+      if (resumeCommand && !resumeReference && !resumeLast) resumeReference = arg;
+      else promptParts.push(arg);
+    }
+
+    if (resumeCommand && resumeLast && resumeReference) {
+      if (promptParts.length > 0)
+        throw new Error("'yet resume --last' does not accept both a session and a prompt.");
+      promptParts.push(resumeReference);
+      resumeReference = undefined;
     }
 
     const prompt = promptParts.join(' ').trim();
@@ -196,8 +221,13 @@ export function handleCliArgs(argv = process.argv.slice(2)): CliResult {
       if (!supported.includes(result.thinkingMode))
         throw new Error(`${selectedModel} does not support ${result.thinkingMode} effort.`);
     }
-    if (result.resumeId && result.resumePicker)
-      throw new Error('Choose either a resume id or the resume picker, not both.');
+    if (resumeCommand) {
+      result.resume = {
+        ...(resumeReference ? { reference: resumeReference } : {}),
+        last: resumeLast,
+        showAll: resumeShowAll,
+      };
+    }
     return result;
   } catch (error) {
     printError(error instanceof Error ? error.message : String(error));

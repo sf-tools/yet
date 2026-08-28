@@ -119,7 +119,11 @@ export function createSlashCommandRegistry(
     listSuggestions(query: SlashCommandQuery) {
       const suggestionContext = getSuggestionContext(context);
 
-      const listArgumentSuggestions = (invocation: string, queryText: string, limit = 6) => {
+      const listArgumentSuggestions = (
+        invocation: string,
+        queryText: string,
+        limit = Number.POSITIVE_INFINITY,
+      ) => {
         const resolved = invocationMap.get(invocation);
         const rawSuggestions = resolved?.command.argumentSuggestions;
         const values =

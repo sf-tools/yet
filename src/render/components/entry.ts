@@ -264,6 +264,14 @@ function renderToolEntry(text: string, ctx: RenderContext): Block {
 }
 
 function renderMetaEntry(text: string, ctx: RenderContext): Block {
+  if (text === 'Model interrupted to submit steer instructions.') {
+    return indent(
+      wrapTextBlock(text, Math.max(1, ctx.width - 3), ctx.theme.foreground),
+      [span(LEFT_MARGIN), span('• ', ctx.theme.dimmed)],
+      `${LEFT_MARGIN}  `,
+    );
+  }
+
   const style =
     text.startsWith('■ Conversation interrupted')
       ? chalk.redBright
