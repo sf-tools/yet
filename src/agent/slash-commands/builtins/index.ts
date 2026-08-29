@@ -15,6 +15,7 @@ import { permissionsSlashCommand } from './permissions';
 import { renameSlashCommand } from './rename';
 import { resumeSlashCommand } from './resume';
 import { statusSlashCommand } from './status';
+import { usageSlashCommand } from './usage';
 import { btwSlashCommand } from './btw';
 import { psSlashCommand } from './ps';
 import { stopSlashCommand } from './stop';
@@ -25,6 +26,7 @@ import { agentsSlashCommand } from './agents';
 
 export const builtinSlashCommands = [
   statusSlashCommand,
+  usageSlashCommand,
   loginSlashCommand,
   logoutSlashCommand,
   modelSlashCommand,

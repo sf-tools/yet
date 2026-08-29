@@ -79,6 +79,12 @@ export function reconcileTransientSequence(previous: string[], next: string[]) {
   return `${moveToNewBottom}${patch}${clearTrailingRows}`;
 }
 
+export function replaceTransientSequence(previous: string[], next: string[]) {
+  if (previous.length === 0) return next.join('\r\n');
+  if (next.length === 0) return clearTransientSequence(previous.length);
+  return `${clearTransientSequence(previous.length)}${next.join('\r\n')}`;
+}
+
 type ScreenScrollRegion = {
   startRow: number;
   endRow: number;

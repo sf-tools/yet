@@ -88,6 +88,7 @@ import {
   diffScreenRowsSequence,
   patchTransientSequence,
   reconcileTransientSequence,
+  replaceTransientSequence,
   synchronizedTerminalSequence,
   takeBlockTail,
 } from './transient-terminal';
@@ -141,6 +142,7 @@ import { AgentDaemonClient, listSharedAgents, sendSharedAgentCommand } from './d
 import type { AgentDaemonCommand, SharedRootSnapshot } from './daemon/protocol';
 import {
   getOpenAIAuthSummary,
+  getOpenAIUsage,
   loginOpenAIWithApiKey,
   loginOpenAIWithBrowser,
   logoutOpenAI,
@@ -330,6 +332,7 @@ export class AgentApp {
   private transcriptHistoryLoadTimer: ReturnType<typeof setTimeout> | null = null;
   private footerNoticeTimer: ReturnType<typeof setTimeout> | null = null;
   private renderScheduled = false;
+  private replaceTransientLayout = false;
   private lastRenderAt = 0;
   private historyNavigationIndex: number | null = null;
   private historyNavigationDraft = '';
@@ -393,6 +396,17 @@ export class AgentApp {
 
   private drawTransientLines(lines: string[]) {
     const visibleLines = clampTransientLines(lines, process.stdout.rows || 30);
+
+    if (this.replaceTransientLayout) {
+      this.replaceTransientLayout = false;
+      if (sameLines(visibleLines, this.lastTransientLines)) return;
+      const sequence = replaceTransientSequence(this.lastTransientLines, visibleLines);
+      if (sequence) process.stdout.write(synchronizedTerminalSequence(sequence));
+      this.transientLineCount = visibleLines.length;
+      this.lastTransientLines = [...visibleLines];
+      return;
+    }
+
     if (sameLines(visibleLines, this.lastTransientLines)) return;
 
     if (this.lastTransientLines.length === 0 || this.transientLineCount === 0) {
@@ -2494,15 +2508,25 @@ export class AgentApp {
 
     await new Promise<void>(resolve => {
       this.statusPanelResolver = resolve;
+      this.replaceTransientLayout = true;
       this.store.setStatusPanel(panel);
       this.render();
     });
+  };
+
+  private updateStatusPanel = (panel: AgentState['statusPanel']) => {
+    if (!panel || !this.statusPanelResolver || !this.state.statusPanel) return false;
+    this.replaceTransientLayout = true;
+    this.store.setStatusPanel(panel);
+    this.render();
+    return true;
   };
 
   private closeStatusPanel() {
     const resolve = this.statusPanelResolver;
     if (!resolve || !this.state.statusPanel) return false;
     this.statusPanelResolver = null;
+    this.replaceTransientLayout = true;
     this.store.setStatusPanel(null);
     this.render();
     resolve();
@@ -3285,11 +3309,13 @@ export class AgentApp {
       openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
       openConfigPicker: () => this.openConfigPicker(),
       openStatusPanel: panel => this.openStatusPanel(panel),
+      updateStatusPanel: panel => this.updateStatusPanel(panel),
       openSubagentsPicker: () => this.openSubagentsPicker(),
       openAgentsOverview: () => this.openAgentsOverview(),
       requestChoice: request => this.requestChoice(request),
       requestTextInput: request => this.requestTextInput(request),
       getOpenAIAuthSummary: () => getOpenAIAuthSummary(),
+      getOpenAIUsage: () => getOpenAIUsage(),
       loginOpenAIWithApiKey: async apiKey => {
         await loginOpenAIWithApiKey(apiKey);
         resetOpenAIClient();

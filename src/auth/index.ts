@@ -1,5 +1,6 @@
 export {
   getOpenAIAuthSummary,
+  getOpenAIUsage,
   loginOpenAIWithApiKey,
   loginOpenAIWithBrowser,
   logoutOpenAI,
@@ -11,4 +12,9 @@ export type {
   OpenAIBrowserLoginProgress,
   OpenAIConnection,
   OpenAILogoutResult,
+  OpenAIUsageBucket,
+  OpenAIUsageCredits,
+  OpenAIUsageSnapshot,
+  OpenAIUsageSpendLimit,
+  OpenAIUsageWindow,
 } from './types';

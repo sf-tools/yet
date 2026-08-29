@@ -74,6 +74,8 @@ deepEqual(
 streamPump.dispose();
 
 const renderContext = createRenderContext(createTheme(), false, 80, 30);
+const longUsageBar = 'Weekly limit  [████████████████████] 100% left (resets 10:05 on 5 Sep)';
+equal(widthOf(longUsageBar), longUsageBar.length, 'block-element progress bars retain one terminal column per cell');
 const tabbedComposerLines = serializeBlock(
   renderComposer(
     {

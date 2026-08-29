@@ -23,13 +23,15 @@ import { renderAgentsOverview } from '@/render/components/agents-overview';
 import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/components/transcript-overlay';
 import { createRenderContext, serializeBlock } from '@/render';
 import { createTheme } from '@/theme';
+import type { OpenAIUsageSnapshot } from '@/auth';
+import { stripAnsi } from '@/text';
 import { EntryKind, type AgentsOverviewState, type ChoiceRequest, type HistoryEntry, type StatusPanelState, type TextPromptRequest, type ThreadGoal } from '@/types';
 import { check, deepEqual, equal, rejects } from './harness';
 
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'login', 'logout', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'loop', 'compact', 'copy', 'ps', 'stop', 'subagents', 'agents', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
+  ['status', 'usage', 'login', 'logout', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'loop', 'compact', 'copy', 'ps', 'stop', 'subagents', 'agents', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
@@ -584,6 +586,105 @@ check(renderedStatus.includes('request-test'), '/status reports the request ID')
 check(renderedStatus.includes('workspace-write'), '/status reports the sandbox mode');
 check(renderedStatus.includes('on-request'), '/status reports the approval policy');
 check(!renderedStatus.includes('Node'), '/status omits the emulated Node version');
+
+const usageCommand = builtinSlashCommands.find(command => command.name === 'usage');
+check(usageCommand !== undefined, '/usage is registered');
+const apiUsageStore = createAgentStore();
+apiUsageStore.setSessionUsage({
+  inputTokens: 12_000,
+  outputTokens: 345,
+  reasoningTokens: 40,
+  cachedInputTokens: 2_000,
+});
+let apiUsagePanel: StatusPanelState | null = null;
+await usageCommand.execute(
+  {
+    store: apiUsageStore,
+    getOpenAIAuthSummary: async () => ({ method: 'api-key' }),
+    getOpenAIUsage: async () => { throw new Error('API-key usage must stay local'); },
+    openStatusPanel: async (panel: StatusPanelState) => { apiUsagePanel = panel; },
+  } as unknown as SlashCommandContext,
+  { raw: '/usage', invocation: 'usage', argsText: '', argv: [] },
+);
+const renderedApiUsage = serializeBlock(
+  renderStatusPanel(apiUsagePanel!, createRenderContext(createTheme(), false, 100, 40)),
+).join('\n');
+check(renderedApiUsage.includes('This session'), '/usage labels API-key usage as session-local');
+check(renderedApiUsage.includes('10.3K'), '/usage reports session total tokens');
+check(renderedApiUsage.includes('2K'), '/usage reports cached input separately');
+check(renderedApiUsage.includes('345'), '/usage reports output tokens');
+check(renderedApiUsage.includes('40'), '/usage reports reasoning tokens');
+
+const chatGPTUsageFixture = {
+  plan: 'plus',
+  buckets: [{
+    name: 'codex',
+    windows: [
+      { kind: 'primary', usedPercent: 72, windowMinutes: 300 },
+      { kind: 'secondary', usedPercent: 45, windowMinutes: 10_080 },
+    ],
+  }],
+  credits: { hasCredits: true, unlimited: false, balance: '12.4' },
+} satisfies OpenAIUsageSnapshot;
+let resolveChatGPTUsage!: (usage: OpenAIUsageSnapshot) => void;
+const pendingChatGPTUsage = new Promise<OpenAIUsageSnapshot>(resolve => { resolveChatGPTUsage = resolve; });
+let closeUsagePanel!: () => void;
+const usagePanelClosed = new Promise<void>(resolve => { closeUsagePanel = resolve; });
+let loadingUsagePanel: StatusPanelState | null = null;
+let chatGPTUsagePanel: StatusPanelState | null = null;
+const chatGPTUsageTask = Promise.resolve(usageCommand.execute(
+  {
+    store: createAgentStore(),
+    getOpenAIAuthSummary: async () => ({ method: 'oauth', email: 'dev@example.com', plan: 'plus' }),
+    getOpenAIUsage: () => pendingChatGPTUsage,
+    openStatusPanel: (panel: StatusPanelState) => {
+      loadingUsagePanel = panel;
+      return usagePanelClosed;
+    },
+    updateStatusPanel: (panel: StatusPanelState) => {
+      chatGPTUsagePanel = panel;
+      return true;
+    },
+  } as unknown as SlashCommandContext,
+  { raw: '/usage', invocation: 'usage', argsText: '', argv: [] },
+));
+while (loadingUsagePanel === null) await new Promise(resolve => setTimeout(resolve, 1));
+const renderedLoadingUsage = serializeBlock(
+  renderStatusPanel(loadingUsagePanel, createRenderContext(createTheme(), false, 100, 40)),
+).join('\n');
+check(renderedLoadingUsage.includes('Loading…'), '/usage opens a loading panel before the ChatGPT request completes');
+resolveChatGPTUsage(chatGPTUsageFixture);
+while (chatGPTUsagePanel === null) await new Promise(resolve => setTimeout(resolve, 1));
+const renderedChatGPTUsage = serializeBlock(
+  renderStatusPanel(chatGPTUsagePanel, createRenderContext(createTheme(), false, 100, 40)),
+).join('\n');
+const paintedChatGPTUsage = serializeBlock(
+  renderStatusPanel(chatGPTUsagePanel, createRenderContext(createTheme(), false, 100, 40)),
+);
+check(renderedChatGPTUsage.includes('ChatGPT'), '/usage identifies ChatGPT account usage');
+check(renderedChatGPTUsage.includes('5h limit'), '/usage labels the five-hour Codex window');
+check(renderedChatGPTUsage.includes('Weekly limit'), '/usage labels the weekly Codex window');
+check(renderedChatGPTUsage.includes('[██████░░░░░░░░░░░░░░] 28% left'), '/usage renders the Codex twenty-segment remaining bar');
+check(renderedChatGPTUsage.includes('12 credits'), '/usage reports ChatGPT credits');
+check(
+  paintedChatGPTUsage.slice(0, -1).every(row => stripAnsi(row).length === 99),
+  '/usage paints every panel row through the same right edge',
+);
+closeUsagePanel();
+await chatGPTUsageTask;
+
+let updatedAfterClose = false;
+await usageCommand.execute(
+  {
+    store: createAgentStore(),
+    getOpenAIAuthSummary: async () => ({ method: 'oauth' }),
+    getOpenAIUsage: () => new Promise<OpenAIUsageSnapshot>(() => {}),
+    openStatusPanel: async () => {},
+    updateStatusPanel: () => { updatedAfterClose = true; return true; },
+  } as unknown as SlashCommandContext,
+  { raw: '/usage', invocation: 'usage', argsText: '', argv: [] },
+);
+check(!updatedAfterClose, 'closing the loading panel does not wait for or repaint a pending usage request');
 
 const loginCommand = builtinSlashCommands.find(command => command.name === 'login');
 check(loginCommand !== undefined, '/login is registered');

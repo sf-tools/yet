@@ -1,6 +1,7 @@
 import stringWidth from 'string-width';
 
 const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+const BLOCK_ELEMENTS = /[\u2580-\u259f]/g;
 
 export const isPrintableAscii = (text: string) => PRINTABLE_ASCII.test(text);
 
@@ -13,7 +14,11 @@ export const stripAnsi = (s: string) => {
 
 export const widthOf = (s: string) => {
   if (isPrintableAscii(s)) return s.length;
-  return stringWidth(stripAnsi(s));
+  const stripped = stripAnsi(s);
+  // Ant's Intl.Segmenter can overcount block-element runs when they are mixed
+  // into a longer ASCII line. Terminals render these progress-bar cells as one
+  // column each, so normalize only that range before asking string-width.
+  return stringWidth(stripped.replace(BLOCK_ELEMENTS, 'x'));
 };
 export const repeat = (ch: string, count: number) => ch.repeat(Math.max(0, count));
 export const plain = (s: string) => {

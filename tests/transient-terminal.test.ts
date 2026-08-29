@@ -4,6 +4,7 @@ import {
   diffScreenRowsSequence,
   patchTransientSequence,
   reconcileTransientSequence,
+  replaceTransientSequence,
   synchronizedTerminalSequence,
   takeBlockTail,
 } from '../src/agent/transient-terminal';
@@ -51,6 +52,20 @@ equal(
   reconcileTransientSequence(['one', 'two'], []),
   '\u001b[1F\u001b[2M',
   'removing transient output deletes its owned rows without a viewport erase',
+);
+
+equal(
+  replaceTransientSequence(['old panel', 'old footer'], ['loading panel', 'loading footer', 'new row']),
+  '\u001b[1F\u001b[2Mloading panel\r\nloading footer\r\nnew row',
+  'replacing a composer surface atomically deletes its old rows before repainting',
+);
+check(
+  !replaceTransientSequence(['old'], ['new', 'row']).startsWith('\r\n'),
+  'composer surface replacement never uses the incremental growth path',
+);
+check(
+  replaceTransientSequence(['old'], ['first', 'second']).includes('first\r\nsecond'),
+  'composer surface replacement returns to column zero for every raw-terminal row',
 );
 
 equal(

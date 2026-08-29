@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { AgentApp } from '@/agent/app';
 import {
   getOpenAIAuthSummary,
+  getOpenAIUsage,
   loginOpenAIWithApiKey,
   loginOpenAIWithBrowser,
   logoutOpenAI,
@@ -111,6 +112,55 @@ try {
   equal(oauthConnection.defaultHeaders?.['ChatGPT-Account-ID'], 'account-test', 'ChatGPT requests include the selected account');
   equal((await getOpenAIAuthSummary(oauthPath))?.method, 'oauth', 'auth status identifies ChatGPT login');
 
+  let usageAuthorization = '';
+  let usageAccount = '';
+  const usage = await getOpenAIUsage({
+    authPath: oauthPath,
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      equal(String(input), 'https://chatgpt.com/backend-api/wham/usage', 'ChatGPT usage uses the Codex usage endpoint');
+      const headers = new Headers(init?.headers);
+      usageAuthorization = headers.get('authorization') ?? '';
+      usageAccount = headers.get('ChatGPT-Account-Id') ?? '';
+      return new Response(JSON.stringify({
+        plan_type: 'plus',
+        rate_limit: {
+          primary_window: {
+            used_percent: 72,
+            limit_window_seconds: 18_000,
+            reset_after_seconds: 600,
+            reset_at: 1_735_693_200,
+          },
+          secondary_window: {
+            used_percent: 45,
+            limit_window_seconds: 604_800,
+            reset_after_seconds: 86_400,
+            reset_at: 1_735_779_600,
+          },
+        },
+        credits: { has_credits: true, unlimited: false, balance: '12.4' },
+        additional_rate_limits: [{
+          limit_name: 'codex_other',
+          metered_feature: 'codex_other',
+          rate_limit: {
+            primary_window: {
+              used_percent: 10,
+              limit_window_seconds: 86_400,
+              reset_after_seconds: 3_600,
+              reset_at: 1_735_693_200,
+            },
+          },
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch,
+  });
+  equal(usageAuthorization, `Bearer ${accessToken}`, 'ChatGPT usage authenticates with the OAuth access token');
+  equal(usageAccount, 'account-test', 'ChatGPT usage selects the signed-in account');
+  equal(usage?.plan, 'plus', 'ChatGPT usage reports the account plan');
+  equal(usage?.buckets[0]?.windows[0]?.windowMinutes, 300, 'ChatGPT usage maps the five-hour window');
+  equal(usage?.buckets[0]?.windows[1]?.windowMinutes, 10_080, 'ChatGPT usage maps the weekly window');
+  equal(usage?.buckets[1]?.name, 'codex_other', 'ChatGPT usage retains additional limit buckets');
+  equal(usage?.credits?.balance, '12.4', 'ChatGPT usage retains available credit balance');
+
   const refreshedAccessToken = jwt({ exp: Math.floor(Date.now() / 1000) + 7_200 });
   await saveStoredOpenAIAuth({
     ...oauth,
@@ -154,6 +204,7 @@ try {
     'environment API keys never authenticate Yet',
   );
   equal(await getOpenAIAuthSummary(missingAuthPath), null, 'environment API keys do not change login status');
+  equal(await getOpenAIUsage({ authPath: apiKeyPath }), null, 'API-key login does not request ChatGPT account usage');
 
   const pickScreen = renderOpenAILoginScreen({ view: 'pick', selected: 0 }, 100);
   check(pickScreen.includes('Welcome to Yet'), 'signed-out startup uses the Codex welcome layout');

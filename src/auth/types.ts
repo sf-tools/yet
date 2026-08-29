@@ -45,3 +45,36 @@ export type OpenAILogoutResult = {
   loggedOut: boolean;
   revocationFailed: boolean;
 };
+
+export type OpenAIUsageWindow = {
+  kind: 'primary' | 'secondary';
+  usedPercent: number;
+  windowMinutes?: number;
+  resetsAt?: number;
+};
+
+export type OpenAIUsageBucket = {
+  name: string;
+  windows: OpenAIUsageWindow[];
+};
+
+export type OpenAIUsageCredits = {
+  hasCredits: boolean;
+  unlimited: boolean;
+  balance?: string;
+};
+
+export type OpenAIUsageSpendLimit = {
+  usedPercent: number;
+  remainingPercent: number;
+  used: string;
+  limit: string;
+  resetsAt?: number;
+};
+
+export type OpenAIUsageSnapshot = {
+  plan?: string;
+  buckets: OpenAIUsageBucket[];
+  credits?: OpenAIUsageCredits;
+  spendLimit?: OpenAIUsageSpendLimit;
+};

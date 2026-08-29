@@ -104,6 +104,7 @@ function printHelp() {
     '',
     formatRows([
       ['/status', 'Show runtime, session, model, permission, and tool status'],
+      ['/usage', 'Show ChatGPT limits or this session\'s API usage'],
       ['/login', 'Log in to OpenAI with ChatGPT or an API key'],
       ['/logout', 'Log out of OpenAI'],
       ['/model', 'Switch among the supported models'],

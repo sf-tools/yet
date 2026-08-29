@@ -14,12 +14,18 @@ import type {
   OpenAIConnection,
   OpenAILogoutResult,
   OpenAIOAuthAuth,
+  OpenAIUsageBucket,
+  OpenAIUsageCredits,
+  OpenAIUsageSnapshot,
+  OpenAIUsageSpendLimit,
+  OpenAIUsageWindow,
   StoredOpenAIAuth,
 } from './types';
 
 const OPENAI_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 const OPENAI_AUTH_ISSUER = 'https://auth.openai.com';
 const OPENAI_CHATGPT_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+const OPENAI_CHATGPT_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
 const OAUTH_CALLBACK_PORTS = [1455, 1457] as const;
 const OAUTH_SCOPE = 'openid profile email offline_access api.connectors.read api.connectors.invoke';
 const REFRESH_WINDOW_MS = 5 * 60 * 1000;
@@ -401,6 +407,115 @@ export async function getOpenAIAuthSummary(authPath = YET_AUTH_PATH): Promise<Op
     return { method: 'oauth', ...(auth.email ? { email: auth.email } : {}), ...(auth.plan ? { plan: auth.plan } : {}) };
   if (auth?.method === 'api-key') return { method: 'api-key' };
   return null;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function finiteNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function optionalString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function parseUsageWindow(value: unknown, kind: OpenAIUsageWindow['kind']): OpenAIUsageWindow | null {
+  const window = objectValue(value);
+  const usedPercent = finiteNumber(window?.used_percent);
+  if (!window || usedPercent === undefined) return null;
+  const windowSeconds = finiteNumber(window.limit_window_seconds);
+  const resetsAt = finiteNumber(window.reset_at);
+  return {
+    kind,
+    usedPercent,
+    ...(windowSeconds !== undefined && windowSeconds > 0
+      ? { windowMinutes: Math.round(windowSeconds / 60) }
+      : {}),
+    ...(resetsAt !== undefined && resetsAt > 0 ? { resetsAt } : {}),
+  };
+}
+
+function parseUsageBucket(value: unknown, name: string): OpenAIUsageBucket {
+  const rateLimit = objectValue(value);
+  const windows = [
+    parseUsageWindow(rateLimit?.primary_window, 'primary'),
+    parseUsageWindow(rateLimit?.secondary_window, 'secondary'),
+  ].filter((window): window is OpenAIUsageWindow => window !== null);
+  return { name, windows };
+}
+
+function parseUsageCredits(value: unknown): OpenAIUsageCredits | undefined {
+  const credits = objectValue(value);
+  if (!credits || typeof credits.has_credits !== 'boolean' || typeof credits.unlimited !== 'boolean')
+    return undefined;
+  const balance = optionalString(credits.balance);
+  return {
+    hasCredits: credits.has_credits,
+    unlimited: credits.unlimited,
+    ...(balance ? { balance } : {}),
+  };
+}
+
+function parseUsageSpendLimit(value: unknown): OpenAIUsageSpendLimit | undefined {
+  const spendControl = objectValue(value);
+  const limit = objectValue(spendControl?.individual_limit);
+  const used = optionalString(limit?.used);
+  const maximum = optionalString(limit?.limit);
+  const usedPercent = finiteNumber(limit?.used_percent);
+  const remainingPercent = finiteNumber(limit?.remaining_percent);
+  if (!limit || !used || !maximum || usedPercent === undefined || remainingPercent === undefined)
+    return undefined;
+  const resetsAt = finiteNumber(limit.reset_at);
+  return {
+    usedPercent,
+    remainingPercent,
+    used,
+    limit: maximum,
+    ...(resetsAt !== undefined && resetsAt > 0 ? { resetsAt } : {}),
+  };
+}
+
+function parseUsageSnapshot(value: unknown, fallbackPlan?: string): OpenAIUsageSnapshot {
+  const payload = objectValue(value);
+  if (!payload) throw new Error('ChatGPT returned an invalid usage response');
+  const buckets = [parseUsageBucket(payload.rate_limit, 'codex')];
+  if (Array.isArray(payload.additional_rate_limits)) {
+    for (const value of payload.additional_rate_limits) {
+      const additional = objectValue(value);
+      if (!additional) continue;
+      const name = optionalString(additional.limit_name) ?? optionalString(additional.metered_feature);
+      if (name) buckets.push(parseUsageBucket(additional.rate_limit, name));
+    }
+  }
+  const plan = optionalString(payload.plan_type) ?? fallbackPlan;
+  const credits = parseUsageCredits(payload.credits);
+  const spendLimit = parseUsageSpendLimit(payload.spend_control);
+  return {
+    ...(plan ? { plan } : {}),
+    buckets,
+    ...(credits ? { credits } : {}),
+    ...(spendLimit ? { spendLimit } : {}),
+  };
+}
+
+export async function getOpenAIUsage(options: RefreshOptions = {}): Promise<OpenAIUsageSnapshot | null> {
+  const auth = await currentStoredAuth(options);
+  if (auth?.method !== 'oauth') return null;
+  const response = await (options.fetch ?? fetch)(OPENAI_CHATGPT_USAGE_URL, {
+    headers: {
+      authorization: `Bearer ${auth.accessToken}`,
+      'ChatGPT-Account-Id': auth.accountId,
+      'user-agent': 'yet',
+      ...(auth.fedramp ? { 'X-OpenAI-Fedramp': 'true' } : {}),
+    },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`Unable to load ChatGPT usage: ${await responseError(response)}`);
+  return parseUsageSnapshot(await response.json(), auth.plan);
 }
 
 async function revokeOAuth(auth: OpenAIOAuthAuth, fetchImpl: typeof fetch, issuer: string) {
