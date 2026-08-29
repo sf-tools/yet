@@ -168,7 +168,7 @@ function html(message: string) {
   const escaped = message.replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[character] ?? character);
-  return `<!doctype html><meta charset="utf-8"><title>Yet login</title><style>body{font:16px system-ui;max-width:42rem;margin:12vh auto;padding:2rem;color:#eee;background:#090b0e}h1{color:#72f1f8}</style><h1>${escaped}</h1><p>You can close this window and return to Yet.</p>`;
+  return `<!doctype html><meta charset="utf-8"><body style="font-family: Arial, sans-serif">${escaped}</body>`;
 }
 
 async function listen(server: Server, ports: readonly number[]) {
@@ -199,11 +199,13 @@ export function openLoginUrl(url: string) {
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   try {
     const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+    // Ant can emit ChildProcess's `spawn` event synchronously, before a caller
+    // can attach a listener. The PID is already populated when launch succeeds,
+    // so do not make OAuth completion depend on observing that event.
+    const opened = typeof child.pid === 'number';
+    child.once('error', () => {});
     child.unref();
-    return new Promise<boolean>(resolve => {
-      child.once('spawn', () => resolve(true));
-      child.once('error', () => resolve(false));
-    });
+    return Promise.resolve(opened);
   } catch {
     return Promise.resolve(false);
   }
@@ -274,9 +276,14 @@ export async function loginOpenAIWithBrowser(options: BrowserLoginOptions = {}) 
           return;
         }
         await saveStoredOpenAIAuth(auth, options.authPath ?? YET_AUTH_PATH);
-        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        response.end(html('Signed in to OpenAI'));
-        if (!settled) { settled = true; finish(auth); }
+        response.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          connection: 'close',
+        });
+        response.once('finish', () => {
+          if (!settled) { settled = true; finish(auth); }
+        });
+        response.end(html('Signed in to Yet.dev using OpenAI'));
       } catch (error) {
         const safeMessage = error instanceof Error ? error.message : 'OpenAI login failed';
         response.writeHead(500, { 'content-type': 'text/html; charset=utf-8' });
@@ -318,7 +325,8 @@ export async function loginOpenAIWithBrowser(options: BrowserLoginOptions = {}) 
   } finally {
     clearTimeout(timeout);
     options.signal?.removeEventListener('abort', onAbort);
-    await new Promise<void>(resolve => server.close(() => resolve()));
+    server.close();
+    server.closeAllConnections?.();
   }
 }
 

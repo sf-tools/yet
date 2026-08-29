@@ -608,14 +608,17 @@ equal(savedLoginKey, 'sk-command-test', '/login saves the submitted API key');
 const logoutCommand = builtinSlashCommands.find(command => command.name === 'logout');
 check(logoutCommand !== undefined, '/logout is registered');
 let logoutNotice = '';
+let logoutExitCode: number | undefined;
 await logoutCommand.execute(
   {
     logoutOpenAI: async () => ({ loggedOut: true, revocationFailed: false }),
     showFooterNotice: (text: string) => { logoutNotice = text; },
+    cleanup: (code?: number) => { logoutExitCode = code; },
   } as unknown as SlashCommandContext,
   { raw: '/logout', invocation: 'logout', argsText: '', argv: [] },
 );
-check(logoutNotice.includes('Logged out of OpenAI'), '/logout confirms local logout');
+equal(logoutNotice, '', '/logout does not leave a transient notice behind');
+equal(logoutExitCode, 0, '/logout exits Yet after removing the login');
 
 const psEntries: HistoryEntry[] = [];
 const psCommand = builtinSlashCommands.find(command => command.name === 'ps');

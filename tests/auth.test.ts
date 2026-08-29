@@ -63,6 +63,7 @@ try {
   });
   const accessToken = jwt({ exp: Math.floor(Date.now() / 1000) + 3_600 });
   let authorizationUrl = '';
+  let callbackPage = '';
   let exchangedVerifier = '';
   const oauthFetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -87,7 +88,9 @@ try {
       const callback = new URL(authorize.searchParams.get('redirect_uri')!);
       callback.searchParams.set('code', 'authorization-code');
       callback.searchParams.set('state', authorize.searchParams.get('state')!);
-      setTimeout(() => { void fetch(callback); }, 0);
+      setTimeout(() => {
+        void fetch(callback).then(async response => { callbackPage = await response.text(); });
+      }, 0);
       return true;
     },
     timeoutMs: 5_000,
@@ -98,6 +101,10 @@ try {
   const authorize = new URL(authorizationUrl);
   equal(authorize.searchParams.get('code_challenge_method'), 'S256', 'browser login uses PKCE S256');
   check(authorize.searchParams.get('scope')?.includes('offline_access'), 'browser login requests refresh access');
+  while (!callbackPage) await new Promise(resolve => setTimeout(resolve, 1));
+  check(callbackPage.includes('Signed in to Yet.dev using OpenAI'), 'browser callback identifies Yet.dev and OpenAI');
+  check(callbackPage.includes('font-family: Arial, sans-serif'), 'browser callback uses Arial');
+  check(!callbackPage.includes('<style>') && !callbackPage.includes('close this window'), 'browser callback has no extra styling or copy');
 
   const oauthConnection = await resolveOpenAIConnection({ authPath: oauthPath });
   equal(oauthConnection.baseURL, 'https://chatgpt.com/backend-api/codex', 'ChatGPT login uses the Codex backend');
