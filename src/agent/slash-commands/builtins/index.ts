@@ -6,6 +6,8 @@ import { deleteSlashCommand } from './delete';
 import { effortSlashCommand } from './effort';
 import { exitSlashCommand } from './exit';
 import { fastSlashCommand } from './fast';
+import { loginSlashCommand } from './login';
+import { logoutSlashCommand } from './logout';
 import { forkSlashCommand } from './fork';
 import { modelSlashCommand } from './model';
 import { planningSlashCommand } from './planning';
@@ -23,6 +25,8 @@ import { agentsSlashCommand } from './agents';
 
 export const builtinSlashCommands = [
   statusSlashCommand,
+  loginSlashCommand,
+  logoutSlashCommand,
   modelSlashCommand,
   effortSlashCommand,
   fastSlashCommand,

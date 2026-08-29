@@ -19,6 +19,9 @@ if (!process.stdin.isTTY || !process.stdout.isTTY) {
   process.exit(1);
 }
 
+const { runOpenAILoginScreen } = await import('@/auth/onboarding');
+if (!await runOpenAILoginScreen()) process.exit(0);
+
 let resumeId: string | undefined;
 let initialComposer: string | undefined;
 if (cli.resume) {

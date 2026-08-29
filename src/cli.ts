@@ -104,6 +104,8 @@ function printHelp() {
     '',
     formatRows([
       ['/status', 'Show runtime, session, model, permission, and tool status'],
+      ['/login', 'Log in to OpenAI with ChatGPT or an API key'],
+      ['/logout', 'Log out of OpenAI'],
       ['/model', 'Switch among the supported models'],
       ['/effort', 'Change reasoning effort'],
       ['/fast', 'Toggle priority processing'],
@@ -132,7 +134,6 @@ function printHelp() {
     chalk.bold('Environment:'),
     '',
     formatRows([
-      ['OPENAI_API_KEY', 'Required for model requests'],
       ['SHELL', 'Shell used for command execution (default: /bin/sh)'],
     ]),
     '',

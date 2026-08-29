@@ -194,6 +194,8 @@ export type TextPromptRequest = {
   title: string;
   detail: string;
   initialValue: string;
+  placeholder?: string;
+  secret?: boolean;
 };
 
 export type ConfigPickerItem = {

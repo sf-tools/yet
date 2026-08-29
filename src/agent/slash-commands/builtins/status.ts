@@ -26,6 +26,12 @@ export const statusSlashCommand: SlashCommand = {
       readOnly: state.planningMode,
     });
     const runtimeAntVersion = antVersion();
+    const auth = await context.getOpenAIAuthSummary();
+    const authLabel = auth?.method === 'oauth'
+      ? `ChatGPT${auth.email ? ` · ${auth.email}` : auth.plan ? ` · ${auth.plan}` : ''}`
+      : auth?.method === 'api-key'
+        ? 'API key'
+        : 'not logged in';
     await context.openStatusPanel({
       title: 'Yet status',
       sections: [
@@ -43,6 +49,7 @@ export const statusSlashCommand: SlashCommand = {
             title: 'Agent',
             rows: [
               { label: 'Model', value: state.currentModel },
+              { label: 'OpenAI', value: authLabel },
               { label: 'Effort', value: state.thinkingMode },
               { label: 'Fast mode', value: state.fastModeEnabled ? 'on' : 'off' },
               { label: 'Permissions', value: state.permissionMode },

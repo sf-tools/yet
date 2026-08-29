@@ -23,13 +23,13 @@ import { renderAgentsOverview } from '@/render/components/agents-overview';
 import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/components/transcript-overlay';
 import { createRenderContext, serializeBlock } from '@/render';
 import { createTheme } from '@/theme';
-import { EntryKind, type AgentsOverviewState, type ChoiceRequest, type HistoryEntry, type StatusPanelState, type ThreadGoal } from '@/types';
+import { EntryKind, type AgentsOverviewState, type ChoiceRequest, type HistoryEntry, type StatusPanelState, type TextPromptRequest, type ThreadGoal } from '@/types';
 import { check, deepEqual, equal, rejects } from './harness';
 
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'loop', 'compact', 'copy', 'ps', 'stop', 'subagents', 'agents', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
+  ['status', 'login', 'logout', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'loop', 'compact', 'copy', 'ps', 'stop', 'subagents', 'agents', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
@@ -372,7 +372,8 @@ check(
   await statusAppInternals.tryAcceptAndSubmitSlashCommandSuggestion(),
   'submitting /status opens its composer surface',
 );
-await Promise.resolve();
+while (statusAppInternals.store.getState().statusPanel === null)
+  await new Promise(resolve => setTimeout(resolve, 1));
 check(statusAppInternals.store.getState().statusPanel !== null, '/status stays open in the composer');
 check(!statusAppInternals.store.getState().busy, '/status does not show the Working indicator');
 await statusAppInternals.handleInputBinding({ type: 'escape' });
@@ -564,6 +565,7 @@ await statusCommand.execute(
     getLastRequestId: () => 'request-test',
     getThreadTitle: () => 'Status test',
     getSessionLineage: () => ({ side: false }),
+    getOpenAIAuthSummary: async () => ({ method: 'oauth', email: 'dev@example.com' }),
     openStatusPanel: async (panel: StatusPanelState) => {
       statusPanel = panel;
     },
@@ -575,12 +577,45 @@ const renderedStatus = serializeBlock(
   renderStatusPanel(statusPanel!, createRenderContext(createTheme(), false, 100, 40)),
 ).join('\n');
 check(renderedStatus.includes('gpt-5.6-sol'), '/status reports the model');
+check(renderedStatus.includes('ChatGPT · dev@example.com'), '/status reports the OpenAI login');
 check(renderedStatus.includes('exec_command, write_stdin, apply_patch'), '/status reports active tools');
 check(renderedStatus.includes('session-test'), '/status reports the session ID');
 check(renderedStatus.includes('request-test'), '/status reports the request ID');
 check(renderedStatus.includes('workspace-write'), '/status reports the sandbox mode');
 check(renderedStatus.includes('on-request'), '/status reports the approval policy');
 check(!renderedStatus.includes('Node'), '/status omits the emulated Node version');
+
+const loginCommand = builtinSlashCommands.find(command => command.name === 'login');
+check(loginCommand !== undefined, '/login is registered');
+let loginPromptSecret = false;
+let savedLoginKey = '';
+await loginCommand.execute(
+  {
+    getOpenAIAuthSummary: async () => null,
+    requestChoice: async (request: ChoiceRequest) => ({ ...request.options[1]!, index: 1 }),
+    requestTextInput: async (request: TextPromptRequest) => {
+      loginPromptSecret = request.secret === true;
+      return 'sk-command-test';
+    },
+    loginOpenAIWithApiKey: async (key: string) => { savedLoginKey = key; },
+    showFooterNotice: () => {},
+  } as unknown as SlashCommandContext,
+  { raw: '/login', invocation: 'login', argsText: '', argv: [] },
+);
+check(loginPromptSecret, '/login hides API-key input');
+equal(savedLoginKey, 'sk-command-test', '/login saves the submitted API key');
+
+const logoutCommand = builtinSlashCommands.find(command => command.name === 'logout');
+check(logoutCommand !== undefined, '/logout is registered');
+let logoutNotice = '';
+await logoutCommand.execute(
+  {
+    logoutOpenAI: async () => ({ loggedOut: true, revocationFailed: false }),
+    showFooterNotice: (text: string) => { logoutNotice = text; },
+  } as unknown as SlashCommandContext,
+  { raw: '/logout', invocation: 'logout', argsText: '', argv: [] },
+);
+check(logoutNotice.includes('Logged out of OpenAI'), '/logout confirms local logout');
 
 const psEntries: HistoryEntry[] = [];
 const psCommand = builtinSlashCommands.find(command => command.name === 'ps');

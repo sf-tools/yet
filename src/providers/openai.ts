@@ -11,6 +11,7 @@ import type {
 
 import type { AgentChatMessage, AgentContent, AgentMessage, AgentUsage } from '@/agent/messages';
 import { EMPTY_USAGE } from '@/agent/messages';
+import { resolveOpenAIConnection } from '@/auth';
 import {
   getOpenAIProviderModelId,
   type ThinkingMode,
@@ -58,12 +59,24 @@ type StreamStepOptions = {
 };
 
 let client: OpenAI | null = null;
+let clientCacheKey: string | null = null;
 
-function getClient() {
-  if (!process.env.OPENAI_API_KEY)
-    throw new Error('OPENAI_API_KEY is required. Set it in the environment before starting Yet.');
-  client ??= new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+async function getClient() {
+  const connection = await resolveOpenAIConnection();
+  if (!client || clientCacheKey !== connection.cacheKey) {
+    client = new OpenAI({
+      apiKey: connection.apiKey,
+      ...(connection.baseURL ? { baseURL: connection.baseURL } : {}),
+      ...(connection.defaultHeaders ? { defaultHeaders: connection.defaultHeaders } : {}),
+    });
+    clientCacheKey = connection.cacheKey;
+  }
   return client;
+}
+
+export function resetOpenAIClient() {
+  client = null;
+  clientCacheKey = null;
 }
 
 function textFromContent(content: AgentContent) {
@@ -193,7 +206,8 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
   const input: ResponseInputItem[] = options.previousResponseId
     ? [...toolOutputItems, ...continuationItems]
     : messageItems;
-  const stream = await getClient().responses.create(
+  const openai = await getClient();
+  const stream = await openai.responses.create(
     {
       model: getOpenAIProviderModelId(options.model),
       instructions,

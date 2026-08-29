@@ -3,6 +3,7 @@ import type { PermissionMode } from '@/permissions';
 import type { AgentStore } from '@/store';
 import type { ChoiceRequest, ChoiceSelection, HistoryEntry, StatusPanelState, TextPromptRequest, ThreadGoal } from '@/types';
 import type { BackgroundTerminalSummary } from '@/agent/background-terminals';
+import type { OpenAIAuthSummary, OpenAIBrowserLoginProgress, OpenAILogoutResult } from '@/auth';
 
 export type SlashCommandArgs = {
   raw: string;
@@ -45,6 +46,10 @@ export type SlashCommandContext = {
   openAgentsOverview(): Promise<void>;
   requestChoice(request: ChoiceRequest): Promise<ChoiceSelection | null>;
   requestTextInput(request: TextPromptRequest): Promise<string | null>;
+  getOpenAIAuthSummary(): Promise<OpenAIAuthSummary | null>;
+  loginOpenAIWithApiKey(apiKey: string): Promise<void>;
+  loginOpenAIWithBrowser(onProgress: (progress: OpenAIBrowserLoginProgress) => void): Promise<OpenAIAuthSummary>;
+  logoutOpenAI(): Promise<OpenAILogoutResult>;
   showFooterNotice(text: string, durationMs?: number): void;
   getActiveToolSummaries(): Array<{ names: string[]; description: string | null }>;
   getSessionId(): string;

@@ -4,6 +4,7 @@ import { preloadSyntaxLanguages } from '../src/render/markdown';
 await preloadSyntaxLanguages();
 await import('./input.test');
 await import('./collaboration.test');
+await import('./auth.test');
 await import('./commands.test');
 await import('./rendering.test');
 await import('./cli.test');

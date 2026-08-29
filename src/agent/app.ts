@@ -139,6 +139,13 @@ import { AgentGraphStore } from './collaboration/graph-store';
 import { ROOT_AGENT_INSTRUCTIONS } from './collaboration/role-instructions';
 import { AgentDaemonClient, listSharedAgents, sendSharedAgentCommand } from './daemon/client';
 import type { AgentDaemonCommand, SharedRootSnapshot } from './daemon/protocol';
+import {
+  getOpenAIAuthSummary,
+  loginOpenAIWithApiKey,
+  loginOpenAIWithBrowser,
+  logoutOpenAI,
+} from '@/auth';
+import { resetOpenAIClient } from '@/providers/openai';
 
 const RAINBOW_PHRASE_PATTERN = /you'?re absolutely right/i;
 const BRACKETED_PASTE_START = '\u001b[200~';
@@ -534,17 +541,22 @@ export class AgentApp {
       this.state.queuedSubmissions.filter(submission => !submission.hidden),
       ctx,
     );
+    const textPromptSecret = this.state.pendingTextPrompt?.secret === true;
     const composer = renderComposer(
       {
-        inputChars: this.state.inputChars,
-        pasteRanges: this.state.pasteRanges,
+        inputChars: textPromptSecret
+          ? this.state.inputChars.map(character => character === '\n' ? '\n' : '•')
+          : this.state.inputChars,
+        pasteRanges: textPromptSecret ? [] : this.state.pasteRanges,
         cursor: this.state.cursor,
-        slashCommandLength: this.getSlashCommandLength(),
-        skillNames: this.skills.map(skill => skill.name),
+        slashCommandLength: textPromptSecret ? 0 : this.getSlashCommandLength(),
+        skillNames: textPromptSecret ? [] : this.skills.map(skill => skill.name),
         showCapabilitiesHint: this.state.historyEntries.length === 0,
-        placeholder: this.sideConversationActive
-          ? 'Ask a follow-up question'
-          : 'Describe a task or ask a question',
+        placeholder: this.state.pendingTextPrompt?.placeholder ?? (
+          this.sideConversationActive
+            ? 'Ask a follow-up question'
+            : 'Describe a task or ask a question'
+        ),
       },
       ctx,
     ).block;
@@ -3277,6 +3289,25 @@ export class AgentApp {
       openAgentsOverview: () => this.openAgentsOverview(),
       requestChoice: request => this.requestChoice(request),
       requestTextInput: request => this.requestTextInput(request),
+      getOpenAIAuthSummary: () => getOpenAIAuthSummary(),
+      loginOpenAIWithApiKey: async apiKey => {
+        await loginOpenAIWithApiKey(apiKey);
+        resetOpenAIClient();
+      },
+      loginOpenAIWithBrowser: async onProgress => {
+        const auth = await loginOpenAIWithBrowser({ onProgress });
+        resetOpenAIClient();
+        return {
+          method: 'oauth' as const,
+          ...(auth.email ? { email: auth.email } : {}),
+          ...(auth.plan ? { plan: auth.plan } : {}),
+        };
+      },
+      logoutOpenAI: async () => {
+        const result = await logoutOpenAI();
+        resetOpenAIClient();
+        return result;
+      },
       showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
       getActiveToolSummaries: () => this.getActiveToolSummaries(),
       getSessionId: () => this.sessionId,
@@ -4179,6 +4210,10 @@ export class AgentApp {
     if (binding.type === 'escape') return this.resolvePendingTextPrompt(null);
     if (binding.type === 'submit')
       return this.resolvePendingTextPrompt(this.state.inputChars.join('').trim() || null);
+    if (this.state.pendingTextPrompt.secret && binding.type === 'pasteImage') {
+      this.showFooterNotice('Paste an API key as text, not an image');
+      return true;
+    }
     return false;
   }
 
