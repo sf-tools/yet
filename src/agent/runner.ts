@@ -101,7 +101,11 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
     accumulatedReasoning += step.reasoning;
     accumulatedUsage = addUsage(accumulatedUsage, step.usage);
     const assistantMessage: AgentChatMessage | undefined = step.text.trim()
-      ? { role: 'assistant', content: step.text }
+      ? {
+          role: 'assistant',
+          content: step.text,
+          phase: step.toolCalls.length === 0 ? 'final_answer' : 'commentary',
+        }
       : undefined;
     if (assistantMessage) generatedMessages.push(assistantMessage);
     await options.onEvent?.({
@@ -133,20 +137,23 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
         role: 'tool-call',
         callId: call.id,
         name: call.name,
+        ...(call.namespace ? { namespace: call.namespace } : {}),
         input: call.input,
       };
       generatedMessages.push(callMessage);
       await options.onEvent?.({ type: 'tool-call', call, message: callMessage });
       try {
-        const result = await options.tools.execute(call.name, call.input);
+        const result = await options.tools.execute(call.name, call.input, call.namespace);
         const output = JSON.stringify({ ok: true, output: toolOutput(result.output) });
         pendingOutputs.push({
           callId: call.id,
+          ...(call.namespace ? { namespace: call.namespace } : {}),
           output,
         });
         const resultMessage: AgentToolResultMessage = {
           role: 'tool-result',
           callId: call.id,
+          ...(call.namespace ? { namespace: call.namespace } : {}),
           output,
         };
         generatedMessages.push(resultMessage);
@@ -158,11 +165,13 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<AgentL
         });
         pendingOutputs.push({
           callId: call.id,
+          ...(call.namespace ? { namespace: call.namespace } : {}),
           output,
         });
         const resultMessage: AgentToolResultMessage = {
           role: 'tool-result',
           callId: call.id,
+          ...(call.namespace ? { namespace: call.namespace } : {}),
           output,
         };
         generatedMessages.push(resultMessage);

@@ -30,6 +30,16 @@ deepEqual(
   'supported model list is exact',
 );
 equal(getOpenAIProviderModelId('gpt-daybreak-blue-latest'), 'daybreak-blue-latest', 'daybreak model maps to its provider ID');
+deepEqual(
+  resolveInputBinding('\u001bb'),
+  { type: 'cycleAgent', delta: -1, wordMotionFallback: true },
+  'option+b cycles to the previous agent only when word motion is available as a fallback',
+);
+deepEqual(
+  resolveInputBinding('\u001bf'),
+  { type: 'cycleAgent', delta: 1, wordMotionFallback: true },
+  'option+f cycles to the next agent only when word motion is available as a fallback',
+);
 check(SYSTEM_PROMPT.includes('You are Yet,'), 'the model prompt identifies Yet');
 check(
   SYSTEM_PROMPT.includes('made by The San Francisco Tooling Company.'),

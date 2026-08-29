@@ -18,6 +18,8 @@ import { psSlashCommand } from './ps';
 import { stopSlashCommand } from './stop';
 import { goalSlashCommand } from './goal';
 import { loopSlashCommand } from './loop';
+import { subagentsSlashCommand } from './subagents';
+import { agentsSlashCommand } from './agents';
 
 export const builtinSlashCommands = [
   statusSlashCommand,
@@ -33,6 +35,8 @@ export const builtinSlashCommands = [
   copySlashCommand,
   psSlashCommand,
   stopSlashCommand,
+  subagentsSlashCommand,
+  agentsSlashCommand,
   resumeSlashCommand,
   forkSlashCommand,
   btwSlashCommand,

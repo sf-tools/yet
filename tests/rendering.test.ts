@@ -304,6 +304,24 @@ check(
     renderedSingleCommand.endsWith('    six'),
   'one command uses the Codex expanded head-tail output cell',
 );
+const renderedSpawn = serializeBlock(renderHistoryEntry({
+  type: 'tool',
+  toolCallId: 'spawn-1',
+  toolName: 'collaboration.spawn_agent',
+  input: {
+    task_name: 'worker',
+    message: 'Inspect the renderer and report the exact mismatch.',
+    model: 'gpt-5.6-luna',
+    reasoning_effort: 'high',
+  },
+  output: JSON.stringify({ task_name: '/root/worker', nickname: 'Mencius' }),
+  status: 'completed',
+}, renderContext)).join('\n');
+check(
+  renderedSpawn.includes('• Spawned Mencius (gpt-5.6-luna high)') &&
+    renderedSpawn.includes('└ Inspect the renderer and report the exact mismatch.'),
+  'collaboration activity uses the Codex agent label, request metadata, and branch detail layout',
+);
 const renderedPlan = serializeBlock(
   renderHistoryEntry(
     {

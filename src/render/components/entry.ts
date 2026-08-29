@@ -404,6 +404,24 @@ export function renderHistoryEntry(
   if (entry.type === 'forked') return renderForkedEntry(entry, ctx);
   if (entry.type === 'resume_hint') return renderResumeHintEntry(entry, ctx);
   if (entry.type === 'background_processes') return renderBackgroundProcessesEntry(entry, ctx);
+  if (entry.type === 'collaboration') {
+    const labels = {
+      spawned: 'Started',
+      interacted: 'Interacted with',
+      waiting: 'Waiting for agents',
+      interrupted: 'Interrupted',
+      completed: 'Completed',
+    } as const;
+    const target = entry.action === 'completed' ? entry.actorPath : entry.targetPath ?? entry.actorPath;
+    return [
+      line(
+        span(LEFT_MARGIN),
+        span('• ', ctx.theme.dimmed),
+        span(labels[entry.action], chalk.bold),
+        ...(entry.action === 'waiting' ? [] : [span(' '), span(`\`${target}\``, chalk.cyanBright)]),
+      ),
+    ];
+  }
   if (entry.type === 'separator') return renderSeparatorEntry(entry, ctx);
   if (entry.type === 'goal_summary') return renderGoalSummary(entry, ctx);
   if (entry.type === 'ansi') {

@@ -541,6 +541,36 @@ try {
     'interrupted tool calls receive a synthetic failed model result',
   );
 
+  const archivedTreeState = persistedStateFromAgentState(createAgentStore().getState());
+  const archivedTreeRoot = await SessionRecorder.open({
+    sessionId: 'archived-tree-root',
+    cwd: sessionHome,
+    yetHome: sessionHome,
+  });
+  archivedTreeRoot.record({ type: 'fork_snapshot', payload: { state: archivedTreeState } });
+  const archivedTreeChild = await SessionRecorder.open({
+    sessionId: 'archived-tree-child',
+    cwd: sessionHome,
+    yetHome: sessionHome,
+    parentSessionId: 'archived-tree-root',
+    rootSessionId: 'archived-tree-root',
+    agentPath: '/root/child',
+    agentForkMode: 'collaboration',
+  });
+  archivedTreeChild.record({ type: 'fork_snapshot', payload: { state: archivedTreeState } });
+  await archivedTreeChild.archiveSession();
+  await archivedTreeRoot.archiveSession();
+  equal(
+    await loadYetSession('archived-tree-child', { yetHome: sessionHome }),
+    null,
+    'archiving an agent tree removes child rollouts from active session loading',
+  );
+  await restoreYetSession('archived-tree-root', { yetHome: sessionHome });
+  check(
+    await loadYetSession('archived-tree-child', { yetHome: sessionHome }) !== null,
+    'restoring an archived root recursively restores its child agent rollouts',
+  );
+
 } finally {
   await rm(sessionHome, { recursive: true, force: true });
 }

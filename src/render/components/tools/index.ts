@@ -4,6 +4,7 @@ import { renderApplyPatchTool } from './apply-patch';
 import { renderGenericTool } from './generic';
 import { renderCommandActivity } from './command-activity';
 import { renderUpdatePlanTool } from './update-plan';
+import { renderCollaborationTool } from './collaboration';
 
 const renderers: Record<string, (entry: ToolHistoryEntry, ctx: RenderContext) => Block> = {
   exec_command: (entry, ctx) => renderCommandActivity([entry], ctx),
@@ -13,5 +14,6 @@ const renderers: Record<string, (entry: ToolHistoryEntry, ctx: RenderContext) =>
 };
 
 export function renderToolHistoryEntry(entry: ToolHistoryEntry, ctx: RenderContext) {
+  if (entry.toolName.startsWith('collaboration.')) return renderCollaborationTool(entry, ctx);
   return (renderers[entry.toolName] || renderGenericTool)(entry, ctx);
 }

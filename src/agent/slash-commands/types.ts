@@ -41,6 +41,8 @@ export type SlashCommandContext = {
   openCommandArgumentPicker(commandName: string): void;
   openConfigPicker(): Promise<void>;
   openStatusPanel(panel: StatusPanelState): Promise<void>;
+  openSubagentsPicker(): Promise<void>;
+  openAgentsOverview(): Promise<void>;
   requestChoice(request: ChoiceRequest): Promise<ChoiceSelection | null>;
   requestTextInput(request: TextPromptRequest): Promise<string | null>;
   showFooterNotice(text: string, durationMs?: number): void;

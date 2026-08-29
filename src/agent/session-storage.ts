@@ -23,6 +23,7 @@ import type {
 import { EMPTY_USAGE } from '@/agent/messages';
 import { createInitialState } from '@/store/state';
 import type { AgentState } from '@/store/types';
+import type { AgentConfigurationSnapshot } from '@/agent/collaboration/registry';
 import { EntryKind, type HistoryEntry, type ToolHistoryEntry } from '@/types';
 
 export type PersistedSessionState = {
@@ -54,6 +55,8 @@ export type YetSessionListEntry = {
   archivedAt?: string;
   parentSessionId?: string;
   forkPoint?: number;
+  rootSessionId?: string;
+  agentPath?: string;
 };
 
 export type YetSessionPromptHistoryEntry = {
@@ -73,6 +76,10 @@ export type LoadedYetSession = {
   archivedAt?: string;
   parentSessionId?: string;
   forkPoint?: number;
+  rootSessionId?: string;
+  agentPath?: string;
+  agentForkMode?: string;
+  agentConfig?: AgentConfigurationSnapshot;
   state: PersistedSessionState;
 };
 
@@ -100,6 +107,10 @@ export type YetSessionEvent =
         createdAt: string;
         parentSessionId?: string;
         forkPoint?: number;
+        rootSessionId?: string;
+        agentPath?: string;
+        agentForkMode?: string;
+        agentConfig?: AgentConfigurationSnapshot;
       };
     }
   | { type: 'fork_snapshot'; payload: { state: PersistedSessionState } }
@@ -159,6 +170,10 @@ export type SessionIndexEntry = {
   archivedAt?: string;
   parentSessionId?: string;
   forkPoint?: number;
+  rootSessionId?: string;
+  agentPath?: string;
+  agentForkMode?: string;
+  agentConfig?: AgentConfigurationSnapshot;
 };
 
 type SessionMetadata = Omit<SessionIndexEntry, 'rolloutPath'>;
@@ -426,6 +441,10 @@ function loadedSessionFromLines(lines: YetRolloutLine[], rolloutPath: string): L
     rolloutPath,
     ...(meta.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
     ...(typeof meta.forkPoint === 'number' ? { forkPoint: meta.forkPoint } : {}),
+    ...(meta.rootSessionId ? { rootSessionId: meta.rootSessionId } : {}),
+    ...(meta.agentPath ? { agentPath: meta.agentPath } : {}),
+    ...(meta.agentForkMode ? { agentForkMode: meta.agentForkMode } : {}),
+    ...(meta.agentConfig ? { agentConfig: cloneJson(meta.agentConfig) } : {}),
     state: persistedStateFromAgentState(
       {
         ...state,
@@ -452,6 +471,10 @@ function metadataFromLoadedSession(session: LoadedYetSession, rolloutPath: strin
     ...(session.archivedAt ? { archivedAt: session.archivedAt } : {}),
     ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
     ...(typeof session.forkPoint === 'number' ? { forkPoint: session.forkPoint } : {}),
+    ...(session.rootSessionId ? { rootSessionId: session.rootSessionId } : {}),
+    ...(session.agentPath ? { agentPath: session.agentPath } : {}),
+    ...(session.agentForkMode ? { agentForkMode: session.agentForkMode } : {}),
+    ...(session.agentConfig ? { agentConfig: cloneJson(session.agentConfig) } : {}),
   };
 }
 
@@ -654,6 +677,8 @@ function listEntriesFromIndex(entries: Map<string, SessionIndexEntry>, yetHome: 
         ...(entry.archivedAt ? { archivedAt: entry.archivedAt } : {}),
         ...(entry.parentSessionId ? { parentSessionId: entry.parentSessionId } : {}),
         ...(typeof entry.forkPoint === 'number' ? { forkPoint: entry.forkPoint } : {}),
+        ...(entry.rootSessionId ? { rootSessionId: entry.rootSessionId } : {}),
+        ...(entry.agentPath ? { agentPath: entry.agentPath } : {}),
       } satisfies YetSessionListEntry,
     ];
   });
@@ -663,6 +688,7 @@ function filterAndSortEntries(entries: YetSessionListEntry[], cwd?: string, arch
   const targetCwd = cwd ? resolve(cwd) : null;
   return entries
     .filter(entry => Boolean(entry.archivedAt) === archived)
+    .filter(entry => !entry.agentPath || entry.agentPath === '/root')
     .filter(entry => !targetCwd || resolve(entry.cwd) === targetCwd)
     .sort((left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt));
 }
@@ -685,6 +711,7 @@ export async function listYetSessionPrompts(
   const workspace = resolve(options.cwd);
   const limit = Math.max(1, options.limit ?? 1000);
   const sessions = listEntriesFromIndex(await readIndex(yetHome), yetHome)
+    .filter(session => !session.agentPath || session.agentPath === '/root')
     .filter(session => resolve(session.cwd) === workspace)
     .sort((left, right) => Date.parse(right.savedAt) - Date.parse(left.savedAt));
   const prompts: Array<YetSessionPromptHistoryEntry & { ordinal: number }> = [];
@@ -927,6 +954,10 @@ export class SessionRecorder {
     title?: string;
     parentSessionId?: string;
     forkPoint?: number;
+    rootSessionId?: string;
+    agentPath?: string;
+    agentForkMode?: string;
+    agentConfig?: AgentConfigurationSnapshot;
   }) {
     this.sessionId = options.sessionId;
     this.rolloutPath = options.rolloutPath;
@@ -944,6 +975,10 @@ export class SessionRecorder {
             createdAt: options.createdAt,
             ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
             ...(typeof options.forkPoint === 'number' ? { forkPoint: options.forkPoint } : {}),
+            ...(options.rootSessionId ? { rootSessionId: options.rootSessionId } : {}),
+            ...(options.agentPath ? { agentPath: options.agentPath } : {}),
+            ...(options.agentForkMode ? { agentForkMode: options.agentForkMode } : {}),
+            ...(options.agentConfig ? { agentConfig: cloneJson(options.agentConfig) } : {}),
           },
         };
     this.metadata = {
@@ -955,6 +990,10 @@ export class SessionRecorder {
       lastOrdinal: this.nextOrdinal - 1,
       ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
       ...(typeof options.forkPoint === 'number' ? { forkPoint: options.forkPoint } : {}),
+      ...(options.rootSessionId ? { rootSessionId: options.rootSessionId } : {}),
+      ...(options.agentPath ? { agentPath: options.agentPath } : {}),
+      ...(options.agentForkMode ? { agentForkMode: options.agentForkMode } : {}),
+      ...(options.agentConfig ? { agentConfig: cloneJson(options.agentConfig) } : {}),
     };
     for (const line of options.lines) metadataFromEvent(this.metadata, line, line.timestamp);
   }
@@ -968,6 +1007,10 @@ export class SessionRecorder {
     yetHome?: string;
     parentSessionId?: string;
     forkPoint?: number;
+    rootSessionId?: string;
+    agentPath?: string;
+    agentForkMode?: string;
+    agentConfig?: AgentConfigurationSnapshot;
   }) {
     const yetHome = options.yetHome ?? DEFAULT_YET_HOME;
     const createdAt = options.createdAt ?? new Date().toISOString();
@@ -989,6 +1032,10 @@ export class SessionRecorder {
         title: options.title ?? nameFromLines(lines),
         parentSessionId: meta?.parentSessionId ?? options.parentSessionId,
         forkPoint: meta?.forkPoint ?? options.forkPoint,
+        rootSessionId: meta?.rootSessionId ?? options.rootSessionId,
+        agentPath: meta?.agentPath ?? options.agentPath,
+        agentForkMode: meta?.agentForkMode ?? options.agentForkMode,
+        agentConfig: meta?.agentConfig ?? options.agentConfig,
       });
     } catch (error) {
       await releaseSessionLock(lock);
@@ -1259,6 +1306,16 @@ export async function restoreYetSession(
     ).catch(() => {});
   } finally {
     await releaseSessionLock(lock);
+  }
+
+  if (!entry.rootSessionId) {
+    for (const child of entries.values()) {
+      if (child.rootSessionId === sessionId && child.archivedAt) {
+        await restoreYetSession(child.sessionId, { yetHome });
+      }
+    }
+    const { restoreAgentGraph } = await import('./collaboration/graph-store');
+    await restoreAgentGraph(sessionId, yetHome);
   }
 
   return loadYetSession(sessionId, { yetHome });

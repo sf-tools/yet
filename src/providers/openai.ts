@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import type {
   EasyInputMessage,
   FunctionTool,
+  NamespaceTool,
   Response,
   ResponseInputItem,
   ResponseStreamEvent,
@@ -19,11 +20,13 @@ import type { Tool } from '@/tools';
 export type ProviderToolCall = {
   id: string;
   name: string;
+  namespace?: string;
   input: unknown;
 };
 
 export type ProviderToolOutput = {
   callId: string;
+  namespace?: string;
   output: string;
 };
 
@@ -101,6 +104,7 @@ function splitInstructions(messages: AgentMessage[]) {
           type: 'function_call',
           call_id: message.callId,
           name: message.name,
+          ...(message.namespace ? { namespace: message.namespace } : {}),
           arguments: JSON.stringify(message.input),
         };
       }
@@ -108,6 +112,7 @@ function splitInstructions(messages: AgentMessage[]) {
         return {
           type: 'function_call_output',
           call_id: message.callId,
+          ...(message.namespace ? { namespace: message.namespace } : {}),
           output: message.output,
         };
       }
@@ -123,7 +128,28 @@ function functionTool(tool: Tool): FunctionTool {
     description: tool.description,
     parameters: tool.inputSchema,
     strict: false,
+    ...(tool.outputSchema ? { output_schema: tool.outputSchema } : {}),
   };
+}
+
+export function serializeOpenAIResponseTools(tools: Tool[]): Array<FunctionTool | NamespaceTool> {
+  const direct = tools.filter(tool => !tool.namespace).map(functionTool);
+  const namespaces = new Map<string, Tool[]>();
+  for (const tool of tools) {
+    if (!tool.namespace) continue;
+    const grouped = namespaces.get(tool.namespace) ?? [];
+    grouped.push(tool);
+    namespaces.set(tool.namespace, grouped);
+  }
+  return [
+    ...direct,
+    ...[...namespaces].map(([name, grouped]) => ({
+      type: 'namespace' as const,
+      name,
+      description: grouped[0]?.namespaceDescription ?? `Tools in the ${name} namespace.`,
+      tools: grouped.map(functionTool),
+    })),
+  ];
 }
 
 function reasoning(thinkingMode: ThinkingMode) {
@@ -158,6 +184,7 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
   const toolOutputItems: ResponseInputItem[] = (options.toolOutputs ?? []).map(output => ({
     type: 'function_call_output',
     call_id: output.callId,
+    ...(output.namespace ? { namespace: output.namespace } : {}),
     output: output.output,
   }));
   const continuationItems: ResponseInputItem[] = (options.continuationMessages ?? []).map(
@@ -171,7 +198,7 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
       model: getOpenAIProviderModelId(options.model),
       instructions,
       input,
-      tools: options.tools.map(functionTool),
+      tools: serializeOpenAIResponseTools(options.tools),
       parallel_tool_calls: false,
       reasoning: reasoning(options.thinkingMode),
       ...(options.fastModeEnabled ? { service_tier: 'priority' as const } : {}),
@@ -213,7 +240,12 @@ export async function streamOpenAIResponse(options: StreamStepOptions): Promise<
       } catch {
         throw new Error(`tool ${event.item.name} returned invalid JSON arguments`);
       }
-      toolCalls.push({ id: event.item.call_id, name: event.item.name, input: inputValue });
+      toolCalls.push({
+        id: event.item.call_id,
+        name: event.item.name,
+        ...(event.item.namespace ? { namespace: event.item.namespace } : {}),
+        input: inputValue,
+      });
       continue;
     }
 

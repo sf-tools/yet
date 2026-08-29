@@ -13,18 +13,22 @@ export type AgentContent = string | Array<AgentTextPart | AgentImagePart>;
 export type AgentChatMessage = {
   role: 'system' | 'user' | 'assistant';
   content: AgentContent;
+  phase?: 'commentary' | 'final_answer';
+  interAgent?: { triggerTurn: boolean };
 };
 
 export type AgentToolCallMessage = {
   role: 'tool-call';
   callId: string;
   name: string;
+  namespace?: string;
   input: unknown;
 };
 
 export type AgentToolResultMessage = {
   role: 'tool-result';
   callId: string;
+  namespace?: string;
   output: string;
 };
 

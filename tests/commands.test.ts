@@ -18,19 +18,77 @@ import { renderConfigPicker } from '@/render/components/config-picker';
 import { renderHistoryEntry } from '@/render/components/entry';
 import { renderSuggestions } from '@/render/components/suggestions';
 import { renderStatusPanel } from '@/render/components/status-panel';
+import { renderSubagentsPicker } from '@/render/components/subagents-picker';
+import { renderAgentsOverview } from '@/render/components/agents-overview';
 import { renderTranscriptDocument, renderTranscriptViewport } from '@/render/components/transcript-overlay';
 import { createRenderContext, serializeBlock } from '@/render';
 import { createTheme } from '@/theme';
-import { EntryKind, type ChoiceRequest, type HistoryEntry, type StatusPanelState, type ThreadGoal } from '@/types';
+import { EntryKind, type AgentsOverviewState, type ChoiceRequest, type HistoryEntry, type StatusPanelState, type ThreadGoal } from '@/types';
 import { check, deepEqual, equal, rejects } from './harness';
 
 const commandNames = builtinSlashCommands.map(command => command.name);
 deepEqual(
   commandNames,
-  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'loop', 'compact', 'copy', 'ps', 'stop', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
+  ['status', 'model', 'effort', 'fast', 'permissions', 'config', 'plan', 'goal', 'loop', 'compact', 'copy', 'ps', 'stop', 'subagents', 'agents', 'resume', 'fork', 'btw', 'rename', 'archive', 'delete', 'exit'],
   'slash command list is exact',
 );
 equal(builtinSlashCommands.find(command => command.name === 'model')?.description, 'Switch the active model.', '/model wording is provider-neutral');
+const subagentsCommand = builtinSlashCommands.find(command => command.name === 'subagents');
+check(subagentsCommand !== undefined, '/subagents is registered');
+let subagentsOpened = false;
+await subagentsCommand.execute({
+  openSubagentsPicker: async () => { subagentsOpened = true; },
+} as unknown as SlashCommandContext, {
+  raw: '/subagents', invocation: 'subagents', argsText: '', argv: [],
+});
+check(subagentsOpened, '/subagents opens the session agent picker');
+const subagentPickerLines = serializeBlock(renderSubagentsPicker({
+  selectedIndex: 0,
+  items: [
+    { id: 'root-id', path: '/root', label: 'Main [default]', status: 'running', current: true, closed: false },
+    { id: 'child-id', path: '/root/worker', label: '/root/worker', status: 'running', current: false, closed: false },
+  ],
+}, createRenderContext(createTheme(), false, 80, 20))).join('\n');
+check(subagentPickerLines.includes('Subagents'), 'subagent picker uses the Codex title');
+check(subagentPickerLines.includes('Main [default] (current)'), 'subagent picker labels the primary thread');
+check(subagentPickerLines.includes('/root/worker'), 'subagent picker shows canonical child paths');
+check(subagentPickerLines.includes('⌥ + ← previous, ⌥ + → next'), 'subagent picker shows canonical navigation hints');
+const agentsCommand = builtinSlashCommands.find(command => command.name === 'agents');
+check(agentsCommand !== undefined, '/agents is registered');
+let agentsOpened = false;
+await agentsCommand.execute({
+  openAgentsOverview: async () => { agentsOpened = true; },
+} as unknown as SlashCommandContext, {
+  raw: '/agents', invocation: 'agents', argsText: '', argv: [],
+});
+check(agentsOpened, '/agents opens the cross-session command center');
+const agentsOverviewState: AgentsOverviewState = {
+  query: '',
+  draft: '',
+  mode: 'browse',
+  grouping: 'project',
+  selectedIndex: 0,
+  roots: [{
+    rootId: 'root-id', title: 'Build Yet', cwd: '/workspace/yet',
+    agents: [
+      { id: 'root-id', path: '/root', label: 'Build Yet', status: 'interrupted', model: 'gpt-5.6-sol', thinkingMode: 'xhigh' },
+      { id: 'worker-id', path: '/root/worker', label: '/root/worker', status: 'running', model: 'gpt-5.6-luna', thinkingMode: 'high' },
+    ],
+  }],
+};
+const agentsOverviewLines = serializeBlock(renderAgentsOverview(
+  agentsOverviewState,
+  createRenderContext(createTheme(), false, 100, 30),
+)).join('\n');
+check(agentsOverviewLines.includes('0 need input   1 working   1 ready'), 'agent command center summarizes live statuses');
+check(agentsOverviewLines.includes('/workspace/yet  2'), 'agent command center groups by project');
+check(agentsOverviewLines.includes('Task details'), 'wide agent command center shows selected task details');
+check(agentsOverviewLines.includes('/ search  g group'), 'agent command center shows search and grouping shortcuts');
+const statusGroupedLines = serializeBlock(renderAgentsOverview(
+  { ...agentsOverviewState, grouping: 'status' },
+  createRenderContext(createTheme(), false, 80, 24),
+)).join('\n');
+check(statusGroupedLines.includes('Working  1') && statusGroupedLines.includes('Ready  1'), 'agent command center groups by status');
 
 const suggestionRegistry = createSlashCommandRegistry(builtinSlashCommands);
 const modelSuggestions = suggestionRegistry.listSuggestions({

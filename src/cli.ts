@@ -28,7 +28,11 @@ export type StartCliResult = {
   permissionMode?: PermissionMode;
 };
 
-type CliResult = StartCliResult | { kind: 'exit'; code: number };
+type CliResult =
+  | StartCliResult
+  | { kind: 'agents' }
+  | { kind: 'agents-daemon' }
+  | { kind: 'exit'; code: number };
 const COMMAND_NAME = 'yet';
 
 function formatRows(rows: Array<[string, string]>, indent = '  ') {
@@ -71,6 +75,7 @@ function printHelp() {
     '',
     formatRows([
       ['resume [session]', 'Resume a saved session; opens the inline picker when omitted'],
+      ['agents', 'Open the cross-session agent command center'],
     ]),
     '',
     chalk.bold('Options:'),
@@ -111,6 +116,8 @@ function printHelp() {
       ['/copy', "Copy the agent's latest response to the clipboard"],
       ['/ps', 'List background terminals'],
       ['/stop', 'Stop all background terminals'],
+      ['/subagents', "Switch between this session's subagents"],
+      ['/agents', 'Open the cross-session agent command center'],
       ['/resume', 'Resume another saved workspace session'],
       ['/fork [name]', 'Fork the current chat'],
       ['/btw [question]', 'Start an ephemeral side conversation'],
@@ -145,6 +152,8 @@ function takeValue(argv: string[], index: number, flag: string) {
 }
 
 export function handleCliArgs(argv = process.argv.slice(2)): CliResult {
+  if (argv.length === 1 && argv[0] === 'agents') return { kind: 'agents' };
+  if (argv.length === 1 && argv[0] === '__agents-daemon') return { kind: 'agents-daemon' };
   if (argv.length === 1 && ['-h', '--help', 'help'].includes(argv[0])) {
     printHelp();
     return { kind: 'exit', code: 0 };

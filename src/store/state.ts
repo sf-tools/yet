@@ -37,6 +37,8 @@ export const createInitialState = (): AgentState => ({
   pendingTextPrompt: null,
   configPicker: null,
   statusPanel: null,
+  subagentsPicker: null,
+  agentsOverview: null,
   footerNotice: null,
   sessionFileChanges: [],
   permissionMode: 'ask',

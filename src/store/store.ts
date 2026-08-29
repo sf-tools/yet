@@ -19,6 +19,7 @@ function hasVisibleContent(entry: HistoryEntry) {
     entry.type === 'forked' ||
     entry.type === 'resume_hint' ||
     entry.type === 'background_processes'
+    || entry.type === 'collaboration'
     || entry.type === 'separator'
     || entry.type === 'goal_summary'
   ) return true;
@@ -196,6 +197,45 @@ function buildAgentStore(initialState: AgentState) {
 
     setStatusPanel(statusPanel: AgentState['statusPanel']) {
       state.statusPanel = statusPanel;
+      return state;
+    },
+
+    setSubagentsPicker(subagentsPicker: AgentState['subagentsPicker']) {
+      state.subagentsPicker = subagentsPicker;
+      return state;
+    },
+
+    setSubagentsPickerSelectedIndex(selectedIndex: number) {
+      if (!state.subagentsPicker || state.subagentsPicker.items.length === 0) return state;
+      state.subagentsPicker.selectedIndex = clamp(
+        selectedIndex,
+        0,
+        state.subagentsPicker.items.length - 1,
+      );
+      return state;
+    },
+
+    setAgentsOverview(agentsOverview: AgentState['agentsOverview']) {
+      state.agentsOverview = agentsOverview;
+      return state;
+    },
+
+    setAgentsOverviewSelectedIndex(selectedIndex: number) {
+      if (!state.agentsOverview) return state;
+      state.agentsOverview.selectedIndex = Math.max(0, selectedIndex);
+      return state;
+    },
+
+    setAgentsOverviewQuery(query: string) {
+      if (!state.agentsOverview) return state;
+      state.agentsOverview.query = query;
+      state.agentsOverview.selectedIndex = 0;
+      return state;
+    },
+
+    setAgentsOverviewInteraction(input: Partial<Pick<NonNullable<AgentState['agentsOverview']>, 'draft' | 'mode' | 'grouping'>>) {
+      if (!state.agentsOverview) return state;
+      Object.assign(state.agentsOverview, input);
       return state;
     },
 

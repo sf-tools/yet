@@ -7,6 +7,7 @@ export type InputBinding =
   | { type: 'toggleSideConversation' }
   | { type: 'toggleTranscript' }
   | { type: 'toggleThinkingMode' }
+  | { type: 'cycleAgent'; delta: -1 | 1; wordMotionFallback?: true }
   | { type: 'pageTranscript'; delta: number }
   | { type: 'halfPageTranscript'; delta: number }
   | { type: 'acceptSuggestion' }
@@ -62,6 +63,14 @@ export function resolveInputBinding(data: Buffer | string): InputBinding | null 
   }
   if (input === 'c' && keypress.ctrl) return { type: 'interrupt' };
   if (keypress.name === 'escape') return { type: 'escape' };
+  if (keypress.name === 'left' && keypress.meta)
+    return { type: 'cycleAgent', delta: -1, wordMotionFallback: true };
+  if (keypress.name === 'right' && keypress.meta)
+    return { type: 'cycleAgent', delta: 1, wordMotionFallback: true };
+  if (keypress.meta && input.toLowerCase() === 'b')
+    return { type: 'cycleAgent', delta: -1, wordMotionFallback: true };
+  if (keypress.meta && input.toLowerCase() === 'f')
+    return { type: 'cycleAgent', delta: 1, wordMotionFallback: true };
   if (keypress.sequence === '\u001f' || (input === '/' && keypress.ctrl))
     return { type: 'toggleSideConversation' };
   if (input === 't' && keypress.ctrl) return { type: 'toggleTranscript' };

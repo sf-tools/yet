@@ -57,6 +57,8 @@ if (cli.kind === 'start') {
 }
 const yolo = handleCliArgs(['--yolo']);
 check(yolo.kind === 'start' && yolo.permissionMode === 'full', '--yolo means Full Access');
+deepEqual(handleCliArgs(['agents']), { kind: 'agents' }, 'yet agents opens the command center');
+deepEqual(handleCliArgs(['__agents-daemon']), { kind: 'agents-daemon' }, 'the hidden daemon entry point is recognized');
 
 const resumePickerCli = handleCliArgs(['resume']);
 deepEqual(

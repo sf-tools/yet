@@ -4,6 +4,7 @@ import { createWriteStdinTool } from './write-stdin';
 import { createUpdatePlanTool } from './update-plan';
 import { createGoalTools } from './goals';
 import { createScheduleLoopTool } from './schedule-loop';
+import { createCollaborationTools } from './collaboration';
 import type { Tool, ToolFactoryOptions } from './types';
 
 export type ToolRegistry = ReturnType<typeof createToolRegistry>;
@@ -14,6 +15,7 @@ export type {
   Tool,
   ToolExecutionResult,
   ToolFactoryOptions,
+  ToolAuthorization,
 } from './types';
 export { createScheduleLoopTool } from './schedule-loop';
 
@@ -27,8 +29,10 @@ export function createToolRegistry(options: ToolFactoryOptions) {
     ...(options.scheduleLoopWakeup
       ? [createScheduleLoopTool({ schedule: options.scheduleLoopWakeup })]
       : []),
+    ...(options.collaboration ? createCollaborationTools(options.collaboration) : []),
   ] as Tool[];
-  const tools = new Map(entries.map(tool => [tool.name, tool]));
+  const key = (name: string, namespace?: string) => namespace ? `${namespace}:${name}` : name;
+  const tools = new Map(entries.map(tool => [key(tool.name, tool.namespace), tool]));
 
   return {
     list() {
@@ -38,11 +42,11 @@ export function createToolRegistry(options: ToolFactoryOptions) {
           (tool.name !== 'schedule_loop' || options.getLoopPacingActive?.() === true),
       );
     },
-    get(name: string) {
-      return tools.get(name) ?? null;
+    get(name: string, namespace?: string) {
+      return tools.get(key(name, namespace)) ?? tools.get(name) ?? null;
     },
-    async execute(name: string, input: unknown) {
-      const tool = tools.get(name);
+    async execute(name: string, input: unknown, namespace?: string) {
+      const tool = tools.get(key(name, namespace)) ?? tools.get(name);
       if (!tool) throw new Error(`unknown tool: ${name}`);
       return await tool.execute(input);
     },

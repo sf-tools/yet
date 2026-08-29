@@ -3,11 +3,13 @@ import type { ThinkingMode } from '@/config';
 import type { PermissionMode } from '@/permissions';
 import type {
   ApprovalRequest,
+  AgentsOverviewState,
   ChoiceRequest,
   ConfigPickerState,
   FileChange,
   HistoryEntry,
   StatusPanelState,
+  SubagentsPickerState,
   TextPromptRequest,
   ThreadGoal,
 } from '@/types';
@@ -66,6 +68,8 @@ export type AgentState = {
   pendingTextPrompt: TextPromptRequest | null;
   configPicker: ConfigPickerState | null;
   statusPanel: StatusPanelState | null;
+  subagentsPicker: SubagentsPickerState | null;
+  agentsOverview: AgentsOverviewState | null;
   footerNotice: string | null;
   sessionFileChanges: FileChange[];
   permissionMode: PermissionMode;

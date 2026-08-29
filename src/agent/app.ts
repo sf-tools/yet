@@ -3,6 +3,7 @@ import {
   createToolRegistry,
   type ScheduleLoopWakeupRequest,
   type ScheduleLoopWakeupResult,
+  type ToolRegistry,
 } from '@/tools';
 import { runUserShell } from './shell';
 import { BackgroundTerminalManager } from './background-terminals';
@@ -35,6 +36,8 @@ import { renderSuggestions } from '@/render/components/suggestions';
 import { renderChoicePrompt, renderOutputPreview } from '@/render/components/transcript';
 import { renderConfigPicker } from '@/render/components/config-picker';
 import { renderStatusPanel } from '@/render/components/status-panel';
+import { renderSubagentsPicker } from '@/render/components/subagents-picker';
+import { filteredAgentOverviewRows, renderAgentsOverview } from '@/render/components/agents-overview';
 import { renderTextPrompt } from '@/render/components/text-prompt';
 import { renderTranscriptDocument, renderTranscriptViewportParts } from '@/render/components/transcript-overlay';
 import { renderPendingInput } from '@/render/components/pending-input';
@@ -57,6 +60,7 @@ import {
   hydrateStateFromSession,
   listYetSessionPrompts,
   loadYetSession,
+  restoreYetSession,
   persistedStateFromAgentState,
   SessionRecorder,
   type ThreadNameSource,
@@ -129,6 +133,12 @@ import {
   type ThreadGoal,
 } from '@/types';
 import { buildGoalContinuationPrompt, createThreadGoal, isGoalUnfinished } from './goals';
+import { AgentControl, type CollaborationActivity } from './collaboration/control';
+import { AgentRuntime } from './runtime';
+import { AgentGraphStore } from './collaboration/graph-store';
+import { ROOT_AGENT_INSTRUCTIONS } from './collaboration/role-instructions';
+import { AgentDaemonClient, listSharedAgents, sendSharedAgentCommand } from './daemon/client';
+import type { AgentDaemonCommand, SharedRootSnapshot } from './daemon/protocol';
 
 const RAINBOW_PHRASE_PATTERN = /you'?re absolutely right/i;
 const BRACKETED_PASTE_START = '\u001b[200~';
@@ -158,6 +168,12 @@ function sameLines(left: string[], right: string[]) {
 
 function isCommandHistoryEntry(entry: HistoryEntry) {
   return entry.type === 'tool' && isCommandToolEntry(entry);
+}
+
+function agentStatusLabel(status: ReturnType<AgentControl['navigationAgents']>[number]['status']) {
+  if (typeof status === 'string') return status.replace('_', ' ');
+  if ('completed' in status) return 'completed';
+  return 'errored';
 }
 
 function commandActivityEnd(entries: HistoryEntry[], start: number) {
@@ -236,6 +252,7 @@ export class AgentApp {
   private lastRenderColumns = 0;
   private lastRenderRows = 0;
   private transcriptOpen = false;
+  private transcriptAgentId: string | null = null;
   private transcriptScrollOffset = 0;
   private backtrackPrimed = false;
   private backtrackHistoryIndex: number | null = null;
@@ -266,30 +283,12 @@ export class AgentApp {
   private readonly backgroundTerminals = new BackgroundTerminalManager(() => this.scheduleRender());
   private resumeSessionScope: ResumeSessionScope = 'current';
 
-  private readonly tools = createToolRegistry({
-    workspaceRoot: process.cwd(),
-    execCommand: (command, options) => this.backgroundTerminals.exec(command, options),
-    writeStdin: (sessionId, chars, options) =>
-      this.backgroundTerminals.write(sessionId, chars, options),
-    authorize: (request, authorization) => this.authorizeTool(request, authorization),
-    getPermissionMode: () => this.state.permissionMode,
-    getPlanningMode: () => this.state.planningMode,
-    getThinkingMode: () => this.state.thinkingMode,
-    recordFileMutations: files => {
-      if (!files.some(file => file.previousContent !== file.nextContent)) return;
-      for (const file of files) {
-        if (!this.sessionFileBaselines.has(file.path)) this.sessionFileBaselines.set(file.path, file.previousContent);
-      }
-    },
-    getGoal: () => this.state.goal,
-    createGoal: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
-    updateGoal: status => this.updateGoalFromTool(status),
-    getLoopPacingActive: () =>
-      this.activeLoopTurnGeneration !== null &&
-      this.activeLoop?.generation === this.activeLoopTurnGeneration &&
-      this.activeLoop.intervalMs === null,
-    scheduleLoopWakeup: request => this.scheduleLoopWakeup(request),
-  });
+  private tools!: ToolRegistry;
+  private collaborationControl!: AgentControl;
+  private agentGraphStore!: AgentGraphStore;
+  private collaborationRootId: string;
+  private agentDaemonClient: AgentDaemonClient | null = null;
+  private agentsOverviewRefreshTimer: ReturnType<typeof setInterval> | null = null;
   private readonly slashCommands = createSlashCommandRegistry(builtinSlashCommands, {
     getSessionId: () => this.sessionId,
     getResumeSessionScope: () => this.resumeSessionScope,
@@ -330,10 +329,13 @@ export class AgentApp {
   private recoveredInputHistory: Promise<PromptHistoryEntry[]> | null = null;
   private preferredComposerColumn: number | null = null;
   private pendingApprovalResolver: ((decision: ApprovalDecision) => void) | null = null;
+  private approvalQueue: Promise<unknown> = Promise.resolve();
   private pendingChoiceResolver: ((selection: ChoiceSelection | null) => void) | null = null;
   private pendingTextPromptResolver: ((value: string | null) => void) | null = null;
   private configPickerResolver: (() => void) | null = null;
   private statusPanelResolver: (() => void) | null = null;
+  private subagentsPickerResolver: (() => void) | null = null;
+  private agentsOverviewResolver: (() => void) | null = null;
   private stdin: TtyReadStream = process.stdin;
   private bracketedPasteActive = false;
   private bracketedPasteBuffer = '';
@@ -555,10 +557,16 @@ export class AgentApp {
     const statusPanel = this.state.statusPanel
       ? renderStatusPanel(this.state.statusPanel, ctx)
       : null;
+    const subagentsPicker = this.state.subagentsPicker
+      ? renderSubagentsPicker(this.state.subagentsPicker, ctx)
+      : null;
+    const agentsOverview = this.state.agentsOverview
+      ? renderAgentsOverview(this.state.agentsOverview, ctx)
+      : null;
     const textPrompt = this.state.pendingTextPrompt
       ? renderTextPrompt(this.state.pendingTextPrompt, composer, ctx)
       : null;
-    const suggestionLines = choicePrompt || configPicker || statusPanel || textPrompt
+    const suggestionLines = choicePrompt || configPicker || statusPanel || subagentsPicker || agentsOverview || textPrompt
       ? []
       : renderSuggestions(
           suggestions,
@@ -566,7 +574,7 @@ export class AgentApp {
           ctx,
           this.isInlineResumePickerOpen() ? this.resumeSessionScope : undefined,
         );
-    const footer = choicePrompt || configPicker || statusPanel || textPrompt || suggestionLines.length > 0
+    const footer = choicePrompt || configPicker || statusPanel || subagentsPicker || agentsOverview || textPrompt || suggestionLines.length > 0
       ? []
       : renderFooter(this.state, ctx);
     const statusIndicator = renderStatusIndicator(
@@ -590,7 +598,7 @@ export class AgentApp {
           ),
         ]
       : [blankLine()];
-    const composerSurface = textPrompt ?? configPicker ?? statusPanel ?? choicePrompt ?? composer;
+    const composerSurface = textPrompt ?? configPicker ?? statusPanel ?? subagentsPicker ?? agentsOverview ?? choicePrompt ?? composer;
     const blocks = bodyBlocks.length > 0
       ? [...bodyBlocks, composerLead, composerSurface, suggestionLines, footer]
       : [composerLead, composerSurface, suggestionLines, footer];
@@ -610,11 +618,19 @@ export class AgentApp {
     if (busy && !this.state.busy) this.busyStartedAt = Date.now();
     if (!busy) this.busyStartedAt = null;
     this.store.setBusy(busy);
+    if (this.collaborationControl.registry.getById(this.collaborationRootId)) {
+      this.collaborationControl.updateStatus(
+        this.collaborationRootId,
+        busy ? 'running' : { completed: this.getLastAssistantResponse() },
+      );
+    }
   }
 
   constructor(options: AgentAppOptions = {}) {
     this.store = createAgentStore(options.initialState);
     this.sessionId = options.sessionId ?? randomUUID();
+    this.collaborationRootId = this.sessionId;
+    this.initializeCollaborationInfrastructure();
     this.bootFromSnapshot = Boolean(options.initialState);
     this.modelOverride = options.model;
     this.thinkingModeOverride = options.thinkingMode;
@@ -641,6 +657,60 @@ export class AgentApp {
     this.rainbowTimer.unref();
 
     installSegmentContainingPolyfill();
+  }
+
+  private initializeCollaborationInfrastructure() {
+    const graphStore = new AgentGraphStore(this.collaborationRootId);
+    this.agentGraphStore = graphStore;
+    this.collaborationControl = new AgentControl({
+      maxConcurrency: 4,
+      maxResidents: 4,
+      runtimeFactory: async runtimeOptions => AgentRuntime.create({
+        ...runtimeOptions,
+        authorize: (request, authorization) => this.authorizeToolForMode(
+          request,
+          authorization,
+          runtimeOptions.agent.config.permissionMode,
+        ),
+        onChanged: () => this.scheduleRender(),
+      }),
+      onActivity: activity => this.recordCollaborationActivity(activity),
+      onChanged: () => {
+        this.syncSubagentsPicker();
+        this.scheduleRender();
+        this.publishSharedAgents();
+      },
+      persist: event => graphStore.append(event),
+    });
+    this.tools = createToolRegistry({
+      workspaceRoot: process.cwd(),
+      execCommand: (command, execOptions) => this.backgroundTerminals.exec(command, execOptions),
+      writeStdin: (sessionId, chars, writeOptions) =>
+        this.backgroundTerminals.write(sessionId, chars, writeOptions),
+      authorize: (request, authorization) => this.authorizeTool(request, authorization),
+      getPermissionMode: () => this.state.permissionMode,
+      getPlanningMode: () => this.state.planningMode,
+      getThinkingMode: () => this.state.thinkingMode,
+      recordFileMutations: files => {
+        if (!files.some(file => file.previousContent !== file.nextContent)) return;
+        for (const file of files) {
+          if (!this.sessionFileBaselines.has(file.path)) this.sessionFileBaselines.set(file.path, file.previousContent);
+        }
+      },
+      getGoal: () => this.state.goal,
+      createGoal: (objective, tokenBudget) => this.createGoalFromTool(objective, tokenBudget),
+      updateGoal: status => this.updateGoalFromTool(status),
+      getLoopPacingActive: () =>
+        this.activeLoopTurnGeneration !== null &&
+        this.activeLoop?.generation === this.activeLoopTurnGeneration &&
+        this.activeLoop.intervalMs === null,
+      scheduleLoopWakeup: request => this.scheduleLoopWakeup(request),
+      collaboration: {
+        agentId: this.collaborationRootId,
+        agentPath: '/root',
+        control: this.collaborationControl,
+      },
+    });
   }
 
   async start() {
@@ -692,6 +762,12 @@ export class AgentApp {
     if (this.permissionModeOverride) this.store.setPermissionMode(this.permissionModeOverride);
     this.sessionRecorder = sessionRecorder;
     this.sessionRolloutPath = this.sessionRecorder.rolloutPath;
+    if (!this.state.messages.some(message =>
+      message.role === 'system' &&
+      typeof message.content === 'string' &&
+      message.content.includes('the primary agent in a team of agents'),
+    )) this.store.pushMessage({ role: 'system', content: ROOT_AGENT_INSTRUCTIONS });
+    await this.attachCollaborationRoot();
 
     const { stream, buffer } = takeOverEarlyStdin();
     this.stdin = stream ?? process.stdin;
@@ -717,15 +793,77 @@ export class AgentApp {
     }
   }
 
+  private async attachCollaborationRoot() {
+    const persistedAgents = await this.agentGraphStore.load();
+    this.collaborationControl.registerRoot({
+      id: this.collaborationRootId,
+      config: {
+        model: this.state.currentModel,
+        thinkingMode: this.state.thinkingMode,
+        fastModeEnabled: this.state.fastModeEnabled,
+        permissionMode: this.state.permissionMode,
+        planningMode: this.state.planningMode,
+        cwd: process.cwd(),
+      },
+      runtime: {
+        start: async message => {
+          if (message) this.store.enqueueSubmission({ text: message, hidden: true });
+          void this.drainQueuedSubmissions();
+        },
+        interrupt: async () => this.state.abortController?.abort(new DOMException('Interrupted', 'AbortError')),
+        dispose: async () => {},
+        isBusy: () => this.state.busy,
+        getState: () => this.state,
+        getHistoryRevision: () => this.store.getHistoryRevision(),
+      },
+      createdAt: this.sessionCreatedAt,
+    });
+    for (const persistedAgent of persistedAgents) {
+      this.collaborationControl.restoreAgent(persistedAgent);
+    }
+    this.agentDaemonClient = new AgentDaemonClient(
+      this.sharedRootSnapshot(),
+      command => this.handleAgentDaemonCommand(command),
+    );
+    await this.agentDaemonClient.connect().catch(() => {
+      this.agentDaemonClient = null;
+    });
+  }
+
+  private async detachCollaborationRoot() {
+    this.agentDaemonClient?.close();
+    this.agentDaemonClient = null;
+    await this.collaborationControl.suspendTree(this.collaborationRootId);
+    await this.agentGraphStore.flush();
+  }
+
+  private async bindCollaborationRoot(rootId: string) {
+    this.collaborationRootId = rootId;
+    this.initializeCollaborationInfrastructure();
+    if (!this.state.messages.some(message =>
+      message.role === 'system' &&
+      typeof message.content === 'string' &&
+      message.content.includes('the primary agent in a team of agents'),
+    )) this.store.pushMessage({ role: 'system', content: ROOT_AGENT_INSTRUCTIONS });
+    this.transcriptAgentId = null;
+    this.transcriptHistoryCache = null;
+    this.transcriptLiveCache = null;
+    await this.attachCollaborationRoot();
+  }
+
   private prepareShutdown() {
     if (this.state.closed) return false;
     this.store.setClosed();
 
     clearInterval(this.statusAnimationTimer);
     clearInterval(this.rainbowTimer);
+    if (this.agentsOverviewRefreshTimer) clearInterval(this.agentsOverviewRefreshTimer);
+    this.agentsOverviewRefreshTimer = null;
     this.cancelTranscriptHistoryLoad();
     this.stopLoop();
     this.backgroundTerminals.stopAll();
+    this.agentDaemonClient?.close();
+    this.agentDaemonClient = null;
     if (this.renderTimer) clearTimeout(this.renderTimer);
     if (this.footerNoticeTimer) clearTimeout(this.footerNoticeTimer);
     process.stdout.off('resize', this.render);
@@ -753,6 +891,8 @@ export class AgentApp {
 
     void (async () => {
       try {
+        await this.collaborationControl.suspendTree(this.collaborationRootId);
+        await this.agentGraphStore.flush();
         await this.sessionRecorder?.close();
       } catch (error) {
         process.stderr.write(`warning: could not finish saving this session: ${plain(error instanceof Error ? error.message : String(error))}\n`);
@@ -784,9 +924,18 @@ export class AgentApp {
     const recorder = this.sessionRecorder;
     if (!recorder) throw new Error('session recorder is not available');
 
+    let archivedChildren: string[] = [];
     try {
+      archivedChildren = await this.mutateSubagentSessions('archive');
       await recorder.archiveSession();
+      await this.agentGraphStore.archive();
     } catch (error) {
+      await restoreYetSession(this.sessionId).catch(() => null);
+      for (const childId of archivedChildren) {
+        await restoreYetSession(childId).catch(() => null);
+      }
+      const { restoreAgentGraph } = await import('./collaboration/graph-store');
+      await restoreAgentGraph(this.collaborationRootId).catch(() => {});
       if (recorder.isClosed) await this.reopenCurrentSessionRecorder();
       throw error;
     }
@@ -803,7 +952,9 @@ export class AgentApp {
     const recorder = this.sessionRecorder;
     if (!recorder) throw new Error('session recorder is not available');
     try {
+      await this.mutateSubagentSessions('delete');
       await recorder.deleteSession();
+      await this.agentGraphStore.delete();
     } catch (error) {
       if (recorder.isClosed) await this.reopenCurrentSessionRecorder();
       throw error;
@@ -813,6 +964,32 @@ export class AgentApp {
     if (!this.prepareShutdown()) return;
     this.printExitSummary(null);
     process.exit(0);
+  }
+
+  private async mutateSubagentSessions(action: 'archive' | 'delete') {
+    const children = this.collaborationControl.registry.descendants('/root');
+    const mutated: string[] = [];
+    await this.collaborationControl.shutdownTree(this.collaborationRootId);
+    for (const child of children) {
+      const loaded = await loadYetSession(child.id);
+      if (!loaded) continue;
+      const recorder = await SessionRecorder.open({
+        sessionId: loaded.sessionId,
+        cwd: loaded.cwd,
+        rolloutPath: loaded.rolloutPath,
+        createdAt: loaded.createdAt,
+        title: loaded.name,
+        parentSessionId: loaded.parentSessionId,
+        rootSessionId: loaded.rootSessionId,
+        agentPath: loaded.agentPath,
+        agentForkMode: loaded.agentForkMode,
+        agentConfig: loaded.agentConfig,
+      });
+      if (action === 'archive') await recorder.archiveSession();
+      else await recorder.deleteSession();
+      mutated.push(child.id);
+    }
+    return mutated;
   }
 
   handleFatalError(error: unknown, code = 1) {
@@ -914,9 +1091,14 @@ export class AgentApp {
 
     if (this.transcriptOpen) {
       const ctx = createRenderContext(this.theme, true, columns, rows);
-      const historyRevision = this.store.getHistoryRevision();
-      const reasoning = this.state.showThinking ? this.state.liveReasoningText : '';
-      const assistant = this.state.liveAssistantText;
+      const viewedAgent = this.transcriptAgentId
+        ? this.collaborationControl.registry.getById(this.transcriptAgentId)
+        : null;
+      const viewedRuntime = viewedAgent?.runtime ?? null;
+      const transcriptState = viewedRuntime?.getState() ?? this.state;
+      const historyRevision = viewedRuntime?.getHistoryRevision() ?? this.store.getHistoryRevision();
+      const reasoning = transcriptState.showThinking ? transcriptState.liveReasoningText : '';
+      const assistant = transcriptState.liveAssistantText;
       const cached = this.transcriptHistoryCache;
       if (
         !cached ||
@@ -925,7 +1107,7 @@ export class AgentApp {
       ) {
         this.cancelTranscriptHistoryLoad();
         const loader = new TranscriptHistoryLoader(
-          this.state.historyEntries,
+          transcriptState.historyEntries,
           ctx,
           this.backtrackHistoryIndex,
         );
@@ -997,7 +1179,10 @@ export class AgentApp {
         contentParts,
         this.transcriptScrollOffset,
         ctx,
-        { backtracking: this.backtrackHistoryIndex !== null },
+        {
+          backtracking: this.backtrackHistoryIndex !== null,
+          ...(viewedAgent ? { agentLabel: viewedAgent.path, viewOnly: true } : {}),
+        },
       );
       if (historyLoader?.done || this.transcriptScrollOffset <= rendered.maxScroll) {
         this.transcriptScrollOffset = Math.min(this.transcriptScrollOffset, rendered.maxScroll);
@@ -1083,6 +1268,80 @@ export class AgentApp {
   private recordSessionEvent(event: Exclude<YetSessionEvent, { type: 'session_meta' }>) {
     if (this.sideConversationActive) return;
     this.sessionRecorder?.record(event);
+  }
+
+  private recordCollaborationActivity(activity: CollaborationActivity) {
+    if (activity.kind !== 'completed') return;
+    const entry: HistoryEntry = {
+      type: 'collaboration',
+      activityId: activity.id,
+      action: activity.kind,
+      actorPath: activity.actorPath,
+      ...(activity.targetPath ? { targetPath: activity.targetPath } : {}),
+      ...(activity.message ? { message: activity.message } : {}),
+    };
+    const owner = this.collaborationControl.registry.getByPath(activity.targetPath ?? '/root');
+    if (!owner) return;
+    if (owner.id !== this.collaborationRootId) {
+      owner.runtime?.recordCollaborationActivity?.(entry);
+      return;
+    }
+    this.store.pushHistoryEntry(entry);
+    this.recordSessionEvent({ type: 'transcript_entry', payload: { entries: [entry] } });
+    this.scheduleRender();
+  }
+
+  private sharedRootSnapshot(): SharedRootSnapshot {
+    return {
+      rootId: this.collaborationRootId,
+      title: this.threadTitle,
+      cwd: process.cwd(),
+      updatedAt: new Date().toISOString(),
+      agents: this.collaborationControl.registry.all()
+        .filter(agent => agent.rootId === this.collaborationRootId)
+        .map(agent => ({
+          id: agent.id,
+          path: agent.path,
+          nickname: agent.nickname,
+          status: agent.path === '/root' && !this.state.busy ? 'interrupted' as const : agent.status,
+          ...(agent.path === '/root' && (this.state.pendingApproval || this.state.pendingChoice)
+            ? { attention: true }
+            : {}),
+          model: agent.config.model,
+          thinkingMode: agent.config.thinkingMode,
+        })),
+    };
+  }
+
+  private publishSharedAgents() {
+    this.agentDaemonClient?.update(this.sharedRootSnapshot());
+  }
+
+  private async handleAgentDaemonCommand(command: AgentDaemonCommand) {
+    if (command.rootId !== this.collaborationRootId) throw new Error('root session is no longer active');
+    if (command.action === 'dispatch') {
+      if (command.agentId === this.collaborationRootId) {
+        this.store.enqueueSubmission({ text: command.message, hidden: true });
+        void this.drainQueuedSubmissions();
+      } else {
+        await this.collaborationControl.sendMessage(
+          this.collaborationRootId,
+          command.agentId,
+          command.message,
+          { triggerTurn: true },
+        );
+      }
+      return;
+    }
+    if (command.action === 'stop') {
+      if (command.agentId === this.collaborationRootId) this.interruptActiveTurn(false);
+      else await this.collaborationControl.interruptAgent(this.collaborationRootId, command.agentId);
+      return;
+    }
+    if (command.action === 'rename') {
+      if (command.agentId === this.collaborationRootId) this.setThreadTitle(command.name);
+      else this.collaborationControl.setNickname(command.agentId, command.name);
+    }
   }
 
   private recordTurnContext() {
@@ -1203,9 +1462,13 @@ export class AgentApp {
 
     this.threadTitleRequest?.cancel();
     this.threadTitleRequest = null;
+    let collaborationDetached = false;
     try {
+      await this.detachCollaborationRoot();
+      collaborationDetached = true;
       await this.sessionRecorder?.close();
     } catch (error) {
+      if (collaborationDetached) await this.attachCollaborationRoot().catch(() => {});
       await nextRecorder.close().catch(() => {});
       throw error;
     }
@@ -1224,6 +1487,7 @@ export class AgentApp {
     this.preferredComposerColumn = null;
     this.sessionFileBaselines.clear();
     this.store.replaceState(hydrateStateFromSession(session));
+    await this.bindCollaborationRoot(session.sessionId);
     this.resetRenderedScreen();
     this.render();
     this.showFooterNotice(`Switched to ${this.threadTitle ?? 'Untitled thread'}`);
@@ -1276,10 +1540,14 @@ export class AgentApp {
       });
     }
 
+    let collaborationDetached = false;
     try {
       await childRecorder.flush();
+      await this.detachCollaborationRoot();
+      collaborationDetached = true;
       await this.sessionRecorder.close();
     } catch (error) {
+      if (collaborationDetached) await this.attachCollaborationRoot().catch(() => {});
       await childRecorder.deleteSession().catch(() => {});
       throw error;
     }
@@ -1298,6 +1566,7 @@ export class AgentApp {
     this.historyNavigationDraft = '';
     this.preferredComposerColumn = null;
     this.store.replaceState(childState);
+    await this.bindCollaborationRoot(childSessionId);
     this.resetRenderedScreen();
     this.render();
   }
@@ -1358,6 +1627,7 @@ export class AgentApp {
     childState.footerNotice = null;
 
     let childRecorder: SessionRecorder | null = null;
+    let collaborationDetached = false;
     try {
       await this.sessionRecorder.flush();
       childRecorder = await SessionRecorder.open({
@@ -1379,8 +1649,11 @@ export class AgentApp {
         });
       }
       await childRecorder.flush();
+      await this.detachCollaborationRoot();
+      collaborationDetached = true;
       await this.sessionRecorder.close();
     } catch (error) {
+      if (collaborationDetached) await this.attachCollaborationRoot().catch(() => {});
       await childRecorder?.deleteSession().catch(() => {});
       this.store.replaceInput(entry.turn?.prompt ?? entry.text);
       this.persistEntry(
@@ -1404,6 +1677,7 @@ export class AgentApp {
     this.resetPreferredComposerColumn();
     this.sessionFileBaselines.clear();
     this.store.replaceState(childState);
+    await this.bindCollaborationRoot(childSessionId);
     this.resetRenderedScreen();
     this.render();
   }
@@ -1594,6 +1868,7 @@ export class AgentApp {
     this.store.setCurrentModel(model);
     if (!getSupportedThinkingModes(model).includes(this.state.thinkingMode)) this.store.setThinkingMode('auto');
     this.store.resetLastUsage();
+    this.syncRootAgentConfiguration();
     void this.persistPreferences();
     this.recordTurnContext();
     this.render();
@@ -1601,6 +1876,7 @@ export class AgentApp {
 
   private setThinkingMode(thinkingMode: AgentState['thinkingMode']) {
     this.store.setThinkingMode(thinkingMode);
+    this.syncRootAgentConfiguration();
     void this.persistPreferences();
     this.recordTurnContext();
     this.render();
@@ -1608,6 +1884,7 @@ export class AgentApp {
 
   private setFastModeEnabled(enabled: boolean) {
     this.store.setFastModeEnabled(enabled);
+    this.syncRootAgentConfiguration();
     void this.persistPreferences();
     this.recordTurnContext();
     this.render();
@@ -1615,6 +1892,7 @@ export class AgentApp {
 
   private setPermissionMode(permissionMode: PermissionMode) {
     this.store.setPermissionMode(permissionMode);
+    this.syncRootAgentConfiguration();
     void this.persistPreferences();
     this.recordTurnContext();
     this.render();
@@ -1622,9 +1900,22 @@ export class AgentApp {
 
   private setPlanningMode(enabled: boolean) {
     this.store.setPlanningMode(enabled);
+    this.syncRootAgentConfiguration();
     this.store.resetLastUsage();
     this.recordTurnContext();
     this.render();
+  }
+
+  private syncRootAgentConfiguration() {
+    if (!this.collaborationControl.registry.getById(this.collaborationRootId)) return;
+    this.collaborationControl.updateConfiguration(this.collaborationRootId, {
+      model: this.state.currentModel,
+      thinkingMode: this.state.thinkingMode,
+      fastModeEnabled: this.state.fastModeEnabled,
+      permissionMode: this.state.permissionMode,
+      planningMode: this.state.planningMode,
+      cwd: process.cwd(),
+    });
   }
 
   private setThreadTitle(title: string | null, source: ThreadNameSource = 'manual', expectedName?: string) {
@@ -1643,11 +1934,23 @@ export class AgentApp {
         },
       });
     }
+    this.publishSharedAgents();
     this.render();
   }
 
   private getActiveTools() {
-    return this.tools;
+    if (!this.sideConversationActive) return this.tools;
+    return {
+      list: () => this.tools.list().filter(tool => tool.namespace !== 'collaboration'),
+      get: (name: string, namespace?: string) =>
+        namespace === 'collaboration' ? null : this.tools.get(name, namespace),
+      execute: (name: string, input: unknown, namespace?: string) => {
+        if (namespace === 'collaboration') {
+          throw new Error('collaboration tools are unavailable inside side conversations');
+        }
+        return this.tools.execute(name, input, namespace);
+      },
+    };
   }
 
   private toolCallTitle(toolName: string, input: unknown, toolCallId?: string) {
@@ -1730,7 +2033,7 @@ export class AgentApp {
     const groups = new Map<unknown, { names: string[]; description: string | null }>();
 
     for (const tool of this.getActiveTools().list()) {
-      const name = tool.name;
+      const name = tool.namespace ? `${tool.namespace}.${tool.name}` : tool.name;
       const existing = groups.get(tool);
       if (existing) {
         existing.names.push(name);
@@ -1832,6 +2135,49 @@ export class AgentApp {
     this.render();
   }
 
+  private async showAgent(agentId: string) {
+    if (agentId === this.collaborationRootId) {
+      if (this.transcriptOpen) this.closeTranscript();
+      this.transcriptAgentId = null;
+      return;
+    }
+    const agent = await this.collaborationControl.activateAgent(agentId, this.collaborationRootId);
+    this.transcriptAgentId = agent.id;
+    this.transcriptHistoryCache = null;
+    this.transcriptLiveCache = null;
+    this.transcriptScrollOffset = 0;
+    if (!this.transcriptOpen) this.openTranscript();
+    else this.render();
+  }
+
+  private async cycleAgent(delta: -1 | 1) {
+    const agents = this.collaborationControl.navigationAgents(this.collaborationRootId);
+    if (agents.length <= 1) {
+      this.showFooterNotice('No subagents available yet.');
+      return;
+    }
+    const currentId = this.transcriptAgentId ?? this.collaborationRootId;
+    const currentIndex = Math.max(0, agents.findIndex(agent => agent.id === currentId));
+    const nextIndex = (currentIndex + delta + agents.length) % agents.length;
+    const next = agents[nextIndex];
+    if (next) await this.showAgent(next.id);
+  }
+
+  private moveComposerCursorByWord(delta: -1 | 1) {
+    const chars = this.state.inputChars;
+    let cursor = this.state.cursor;
+    if (delta < 0) {
+      while (cursor > 0 && /\s/u.test(chars[cursor - 1] ?? '')) cursor -= 1;
+      while (cursor > 0 && !/\s/u.test(chars[cursor - 1] ?? '')) cursor -= 1;
+    } else {
+      while (cursor < chars.length && !/\s/u.test(chars[cursor] ?? '')) cursor += 1;
+      while (cursor < chars.length && /\s/u.test(chars[cursor] ?? '')) cursor += 1;
+    }
+    this.resetPreferredComposerColumn();
+    this.store.setCursor(cursor);
+    this.render();
+  }
+
   private resetBacktrackState() {
     this.backtrackPrimed = false;
     this.backtrackHistoryIndex = null;
@@ -1886,6 +2232,7 @@ export class AgentApp {
     this.transcriptScrollOffset = 0;
     this.cancelTranscriptHistoryLoad();
     this.lastTranscriptLines = [];
+    this.transcriptAgentId = null;
     this.transientLineCount = 0;
     this.lastTransientLines = [];
     if (resetBacktrack) this.resetBacktrackState();
@@ -1895,6 +2242,14 @@ export class AgentApp {
 
   private handleTranscriptBinding(binding: ReturnType<typeof resolveInputBinding>) {
     if (!this.transcriptOpen || !binding) return false;
+    if (binding.type === 'cycleAgent') {
+      void this.cycleAgent(binding.delta);
+      return true;
+    }
+    if (this.transcriptAgentId && binding.type === 'escape') {
+      this.closeTranscript();
+      return true;
+    }
     if (this.backtrackHistoryIndex !== null) {
       if (binding.type === 'escape' || (binding.type === 'moveCursor' && binding.delta < 0)) {
         this.stepBacktrack(-1);
@@ -2000,17 +2355,28 @@ export class AgentApp {
     if (nextFileChanges.length > 0) this.store.upsertSessionFileChanges(nextFileChanges);
   }
 
-  private authorizeTool = async (request: ApprovalRequest, authorization: { requested: ToolPermission; potentiallyUnsafe?: boolean }) => {
+  private authorizeToolForMode = async (
+    request: ApprovalRequest,
+    authorization: { requested: ToolPermission; potentiallyUnsafe?: boolean },
+    mode: PermissionMode,
+  ) => {
     if (
       !shouldPromptForTool({
-        mode: this.state.permissionMode,
+        mode,
         requested: authorization.requested,
         potentiallyUnsafe: authorization.potentiallyUnsafe,
       })
     )
       return true;
-    return await this.requestApproval(request);
+    const queued = this.approvalQueue.then(() => this.requestApproval(request));
+    this.approvalQueue = queued.catch(() => {});
+    return await queued;
   };
+
+  private authorizeTool = async (
+    request: ApprovalRequest,
+    authorization: { requested: ToolPermission; potentiallyUnsafe?: boolean },
+  ) => this.authorizeToolForMode(request, authorization, this.state.permissionMode);
 
   private requestApproval = async (request: ApprovalRequest) => {
     if (this.pendingApprovalResolver) throw new Error('another approval is already pending');
@@ -2018,6 +2384,7 @@ export class AgentApp {
     const decision = await new Promise<ApprovalDecision>(resolve => {
       this.pendingApprovalResolver = resolve;
       this.store.setPendingApproval(request);
+      this.publishSharedAgents();
       this.render();
     });
 
@@ -2030,6 +2397,7 @@ export class AgentApp {
 
     this.pendingApprovalResolver = null;
     this.store.setPendingApproval(null);
+    this.publishSharedAgents();
     this.render();
     resolve(decision);
     return true;
@@ -2045,6 +2413,7 @@ export class AgentApp {
     const selection = await new Promise<ChoiceSelection | null>(resolve => {
       this.pendingChoiceResolver = resolve;
       this.store.setPendingChoice(request, selectedIndex);
+      this.publishSharedAgents();
       this.render();
     });
 
@@ -2081,6 +2450,7 @@ export class AgentApp {
 
     this.pendingChoiceResolver = null;
     this.store.setPendingChoice(null);
+    this.publishSharedAgents();
     this.render();
     resolve(selection);
     return true;
@@ -2124,6 +2494,265 @@ export class AgentApp {
     this.store.setStatusPanel(null);
     this.render();
     resolve();
+    return true;
+  }
+
+  private openSubagentsPicker = async () => {
+    if (this.subagentsPickerResolver) throw new Error('subagents are already open');
+    if (
+      this.pendingChoiceResolver ||
+      this.pendingApprovalResolver ||
+      this.pendingTextPromptResolver ||
+      this.configPickerResolver ||
+      this.statusPanelResolver
+    ) throw new Error('another prompt is already open');
+
+    const items = this.subagentPickerItems();
+    const selectedIndex = Math.max(0, items.findIndex(item => item.current));
+    await new Promise<void>(resolve => {
+      this.subagentsPickerResolver = resolve;
+      this.store.setSubagentsPicker({ selectedIndex, items });
+      this.render();
+    });
+  };
+
+  private subagentPickerItems() {
+    const currentId = this.transcriptAgentId ?? this.collaborationRootId;
+    return this.collaborationControl.navigationAgents(this.collaborationRootId).map(agent => ({
+      id: agent.id,
+      path: agent.path,
+      label: agent.path === '/root' ? 'Main [default]' : agent.path,
+      status: agentStatusLabel(agent.status),
+      current: agent.id === currentId,
+      closed: agent.status === 'shutdown',
+    }));
+  }
+
+  private syncSubagentsPicker() {
+    const picker = this.state.subagentsPicker;
+    if (!picker) return;
+    const selectedId = picker.items[picker.selectedIndex]?.id;
+    const items = this.subagentPickerItems();
+    const selectedIndex = Math.max(0, items.findIndex(item => item.id === selectedId));
+    this.store.setSubagentsPicker({ selectedIndex, items });
+  }
+
+  private closeSubagentsPicker() {
+    const resolve = this.subagentsPickerResolver;
+    if (!resolve || !this.state.subagentsPicker) return false;
+    this.subagentsPickerResolver = null;
+    this.store.setSubagentsPicker(null);
+    this.render();
+    resolve();
+    return true;
+  }
+
+  private moveSubagentsPickerSelection(delta: number) {
+    const picker = this.state.subagentsPicker;
+    if (!picker || picker.items.length === 0) return false;
+    this.store.setSubagentsPickerSelectedIndex(
+      (picker.selectedIndex + delta + picker.items.length) % picker.items.length,
+    );
+    this.render();
+    return true;
+  }
+
+  private async selectSubagentPickerItem() {
+    const picker = this.state.subagentsPicker;
+    const item = picker?.items[picker.selectedIndex ?? -1];
+    if (!item) return this.closeSubagentsPicker();
+    this.closeSubagentsPicker();
+    await this.showAgent(item.id);
+    return true;
+  }
+
+  private async handleSubagentsPickerBinding(binding: ReturnType<typeof resolveInputBinding>) {
+    if (!this.state.subagentsPicker || !binding) return false;
+    if (binding.type === 'escape' || binding.type === 'interrupt') return this.closeSubagentsPicker();
+    if (binding.type === 'submit') return await this.selectSubagentPickerItem();
+    if (binding.type === 'moveSuggestion') return this.moveSubagentsPickerSelection(binding.delta);
+    if (binding.type === 'cycleAgent') return this.moveSubagentsPickerSelection(binding.delta);
+    return true;
+  }
+
+  private openAgentsOverview = async () => {
+    if (this.agentsOverviewResolver) throw new Error('agents overview is already open');
+    if (
+      this.pendingChoiceResolver || this.pendingApprovalResolver || this.pendingTextPromptResolver ||
+      this.configPickerResolver || this.statusPanelResolver || this.subagentsPickerResolver
+    ) throw new Error('another prompt is already open');
+    const roots = await listSharedAgents();
+    await new Promise<void>(resolve => {
+      this.agentsOverviewResolver = resolve;
+      this.store.setAgentsOverview(this.agentOverviewState(roots));
+      this.agentsOverviewRefreshTimer = setInterval(() => {
+        void this.refreshAgentsOverview();
+      }, 1_000);
+      this.agentsOverviewRefreshTimer.unref?.();
+      this.render();
+    });
+  };
+
+  private agentOverviewState(
+    roots: Awaited<ReturnType<typeof listSharedAgents>>,
+    previous = this.state.agentsOverview,
+  ): NonNullable<AgentState['agentsOverview']> {
+    const selected = previous
+      ? filteredAgentOverviewRows(previous)[previous.selectedIndex]
+      : null;
+    const state = {
+      query: previous?.query ?? '',
+      draft: previous?.draft ?? '',
+      mode: previous?.mode ?? 'browse' as const,
+      grouping: previous?.grouping ?? 'project' as const,
+      selectedIndex: previous?.selectedIndex ?? 0,
+      roots: roots.map(root => ({
+        rootId: root.rootId,
+        title: root.title,
+        cwd: root.cwd,
+        agents: root.agents.map(agent => ({
+          id: agent.id,
+          path: agent.path,
+          label: agent.path === '/root' ? (root.title ?? 'Untitled session') : agent.path,
+          status: agent.attention ? 'needs input' : agentStatusLabel(agent.status),
+          model: agent.model,
+          thinkingMode: agent.thinkingMode,
+        })),
+      })),
+    };
+    const rows = filteredAgentOverviewRows(state);
+    const selectedIndex = selected
+      ? rows.findIndex(row => row.root.rootId === selected.root.rootId && row.agent.id === selected.agent.id)
+      : -1;
+    state.selectedIndex = selectedIndex >= 0
+      ? selectedIndex
+      : Math.max(0, Math.min(state.selectedIndex, Math.max(0, rows.length - 1)));
+    return state;
+  }
+
+  private async refreshAgentsOverview() {
+    if (!this.state.agentsOverview || !this.agentsOverviewResolver) return;
+    const roots = await listSharedAgents().catch(() => null);
+    if (!roots || !this.state.agentsOverview) return;
+    this.store.setAgentsOverview(this.agentOverviewState(roots));
+    this.render();
+  }
+
+  private closeAgentsOverview() {
+    const resolve = this.agentsOverviewResolver;
+    if (!resolve || !this.state.agentsOverview) return false;
+    if (this.agentsOverviewRefreshTimer) clearInterval(this.agentsOverviewRefreshTimer);
+    this.agentsOverviewRefreshTimer = null;
+    this.agentsOverviewResolver = null;
+    this.store.setAgentsOverview(null);
+    this.render();
+    resolve();
+    return true;
+  }
+
+  private selectedOverviewAgent() {
+    const overview = this.state.agentsOverview;
+    if (!overview) return null;
+    return filteredAgentOverviewRows(overview)[overview.selectedIndex] ?? null;
+  }
+
+  private setOverviewInteraction(input: Partial<Pick<NonNullable<AgentState['agentsOverview']>, 'draft' | 'mode' | 'grouping'>>) {
+    this.store.setAgentsOverviewInteraction(input);
+    this.render();
+  }
+
+  private async submitOverviewAction() {
+    const overview = this.state.agentsOverview;
+    const selected = this.selectedOverviewAgent();
+    if (!overview) return false;
+    if (overview.mode === 'search') {
+      this.store.setAgentsOverviewQuery(overview.draft);
+      this.setOverviewInteraction({ mode: 'browse', draft: '' });
+      return true;
+    }
+    if (overview.mode === 'browse') {
+      this.setOverviewInteraction({ mode: 'dispatch', draft: '' });
+      return true;
+    }
+    const value = overview.draft.trim();
+    if (!selected || !value) return true;
+    const action = overview.mode;
+    try {
+      await sendSharedAgentCommand(action === 'dispatch'
+        ? { action, rootId: selected.root.rootId, agentId: selected.agent.id, message: value }
+        : { action, rootId: selected.root.rootId, agentId: selected.agent.id, name: value });
+      this.setOverviewInteraction({ mode: 'browse', draft: '' });
+      this.showFooterNotice(action === 'dispatch' ? 'Task sent.' : 'Agent renamed.');
+      await this.refreshAgentsOverview();
+    } catch (error) {
+      this.showFooterNotice(error instanceof Error ? error.message : String(error), 5_000);
+    }
+    return true;
+  }
+
+  private async handleAgentsOverviewBinding(binding: ReturnType<typeof resolveInputBinding>) {
+    const overview = this.state.agentsOverview;
+    if (!overview || !binding) return false;
+    const rows = filteredAgentOverviewRows(overview);
+    if (binding.type === 'escape' || binding.type === 'interrupt') {
+      if (overview.mode === 'search') {
+        this.store.setAgentsOverviewQuery('');
+        this.setOverviewInteraction({ mode: 'browse', draft: '' });
+        return true;
+      }
+      if (overview.mode !== 'browse' || overview.draft) {
+        this.setOverviewInteraction({ mode: 'browse', draft: '' });
+        return true;
+      }
+      return this.closeAgentsOverview();
+    }
+    if (binding.type === 'moveSuggestion') {
+      if (overview.mode === 'rename') return true;
+      this.store.setAgentsOverviewSelectedIndex(
+        (overview.selectedIndex + binding.delta + Math.max(1, rows.length)) % Math.max(1, rows.length),
+      );
+      this.render();
+      return true;
+    }
+    if (binding.type === 'backspace') {
+      if (overview.mode !== 'browse')
+        this.setOverviewInteraction({ draft: overview.draft.slice(0, -1) });
+      return true;
+    }
+    if (binding.type === 'submit') return await this.submitOverviewAction();
+    if (binding.type === 'insertText' && overview.mode === 'browse' && binding.text === '/') {
+      this.setOverviewInteraction({ mode: 'search', draft: overview.query });
+      return true;
+    }
+    if (binding.type === 'insertText' && overview.mode === 'browse' && binding.text === 'g') {
+      this.setOverviewInteraction({ grouping: overview.grouping === 'project' ? 'status' : 'project' });
+      return true;
+    }
+    if (binding.type === 'insertText' && overview.mode === 'browse' && binding.text === 'n') {
+      this.setOverviewInteraction({ mode: 'dispatch', draft: '' });
+      return true;
+    }
+    if (binding.type === 'insertText' && overview.mode === 'browse' && binding.text === 'r') {
+      const selected = this.selectedOverviewAgent();
+      if (selected) this.setOverviewInteraction({ mode: 'rename', draft: selected.agent.label });
+      return true;
+    }
+    if (binding.type === 'insertText' && overview.mode === 'browse' && binding.text === 's') {
+      const selected = this.selectedOverviewAgent();
+      if (selected) {
+        await sendSharedAgentCommand({
+          action: 'stop', rootId: selected.root.rootId, agentId: selected.agent.id,
+        }).catch(error => this.showFooterNotice(error instanceof Error ? error.message : String(error), 5_000));
+      }
+      return true;
+    }
+    if (binding.type === 'insertText') {
+      this.setOverviewInteraction({
+        mode: overview.mode === 'browse' ? 'dispatch' : overview.mode,
+        draft: overview.draft + binding.text,
+      });
+      return true;
+    }
     return true;
   }
 
@@ -2317,7 +2946,14 @@ export class AgentApp {
 
   private async consumePendingSteers(signal?: AbortSignal): Promise<AgentMessage[]> {
     const pendingSteers = this.state.pendingSteers.slice();
-    if (pendingSteers.length === 0) return [];
+    const mailboxMessages = this.collaborationControl.mailboxMessages(this.collaborationRootId);
+    if (pendingSteers.length === 0) {
+      if (mailboxMessages.length > 0) {
+        this.store.pushMessages(mailboxMessages);
+        this.recordSessionEvent({ type: 'user_message', payload: { messages: mailboxMessages } });
+      }
+      return mailboxMessages;
+    }
 
     const prepared = await Promise.all(
       pendingSteers.map(async submission => {
@@ -2344,7 +2980,11 @@ export class AgentApp {
     signal?.throwIfAborted();
     this.store.takePendingSteers(pendingSteers.length);
     this.persistCurrentLiveOutcome();
-    const messages: AgentMessage[] = [];
+    const messages: AgentMessage[] = [...mailboxMessages];
+    if (mailboxMessages.length > 0) {
+      this.store.pushMessages(mailboxMessages);
+      this.recordSessionEvent({ type: 'user_message', payload: { messages: mailboxMessages } });
+    }
 
     for (const steer of prepared) {
       for (const warning of steer.skillInstructions.warnings) {
@@ -2633,6 +3273,8 @@ export class AgentApp {
       openCommandArgumentPicker: commandName => this.openCommandArgumentPicker(commandName),
       openConfigPicker: () => this.openConfigPicker(),
       openStatusPanel: panel => this.openStatusPanel(panel),
+      openSubagentsPicker: () => this.openSubagentsPicker(),
+      openAgentsOverview: () => this.openAgentsOverview(),
       requestChoice: request => this.requestChoice(request),
       requestTextInput: request => this.requestTextInput(request),
       showFooterNotice: (text, durationMs) => this.showFooterNotice(text, durationMs),
@@ -2822,6 +3464,12 @@ export class AgentApp {
       this.store.pushMessages(turnMessages);
       this.recordSessionEvent({ type: 'user_message', payload: { messages: turnMessages } });
 
+      const mailboxMessages = this.collaborationControl.mailboxMessages(this.collaborationRootId);
+      if (mailboxMessages.length > 0) {
+        this.store.pushMessages(mailboxMessages);
+        this.recordSessionEvent({ type: 'user_message', payload: { messages: mailboxMessages } });
+      }
+
       const runtimeMessages = this.getRuntimeMessages();
       const estimatedPromptTokens = estimateMessageTokens(runtimeMessages);
       const sessionUsageAtTurnStart: AgentUsage = { ...this.state.sessionUsage };
@@ -2926,7 +3574,9 @@ export class AgentApp {
               }
               const part = {
                 toolCallId: event.call.id,
-                toolName: event.call.name,
+                toolName: event.call.namespace
+                  ? `${event.call.namespace}.${event.call.name}`
+                  : event.call.name,
                 input: event.call.input,
                 title,
               };
@@ -2942,7 +3592,9 @@ export class AgentApp {
             case 'tool-result': {
               const part = {
                 toolCallId: event.call.id,
-                toolName: event.call.name,
+                toolName: event.call.namespace
+                  ? `${event.call.namespace}.${event.call.name}`
+                  : event.call.name,
                 input: event.call.input,
                 output: event.result.output,
                 title: this.toolCallTitle(event.call.name, event.call.input, event.call.id),
@@ -2966,7 +3618,9 @@ export class AgentApp {
             case 'tool-error': {
               const entry = createFailedToolEntry({
                 toolCallId: event.call.id,
-                toolName: event.call.name,
+                toolName: event.call.namespace
+                  ? `${event.call.namespace}.${event.call.name}`
+                  : event.call.name,
                 input: event.call.input,
                 title: this.toolCallTitle(event.call.name, event.call.input, event.call.id),
                 error: event.error,
@@ -3239,6 +3893,7 @@ export class AgentApp {
     }
     if (this.state.busy && this.state.abortController && !slashCommand) {
       this.store.enqueuePendingSteer({ text: raw });
+      this.collaborationControl.notifyUserSteer(this.collaborationRootId);
       this.render();
       return;
     }
@@ -3573,6 +4228,17 @@ export class AgentApp {
 
     if (await this.handleConfigPickerBinding(binding)) return;
     if (this.handleStatusPanelBinding(binding)) return;
+    if (await this.handleSubagentsPickerBinding(binding)) return;
+    if (await this.handleAgentsOverviewBinding(binding)) return;
+
+    if (binding.type === 'cycleAgent') {
+      if (binding.wordMotionFallback && this.state.inputChars.length > 0) {
+        this.moveComposerCursorByWord(binding.delta);
+        return;
+      }
+      await this.cycleAgent(binding.delta);
+      return;
+    }
 
     if (binding.type === 'interrupt') {
       if (this.sideConversationActive && this.state.inputChars.length === 0) {

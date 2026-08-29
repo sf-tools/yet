@@ -63,11 +63,53 @@ export type BackgroundProcessesHistoryEntry = {
   }>;
 };
 
+export type CollaborationHistoryEntry = {
+  type: 'collaboration';
+  activityId: string;
+  action: 'spawned' | 'interacted' | 'waiting' | 'interrupted' | 'completed';
+  actorPath: string;
+  targetPath?: string;
+  message?: string;
+};
+
 export type StatusPanelState = {
   title: string;
   sections: Array<{
     title: string;
     rows: Array<{ label: string; value: string }>;
+  }>;
+};
+
+export type SubagentsPickerState = {
+  selectedIndex: number;
+  items: Array<{
+    id: string;
+    path: string;
+    label: string;
+    status: string;
+    current: boolean;
+    closed: boolean;
+  }>;
+};
+
+export type AgentsOverviewState = {
+  query: string;
+  draft: string;
+  mode: 'browse' | 'search' | 'dispatch' | 'rename';
+  grouping: 'project' | 'status';
+  selectedIndex: number;
+  roots: Array<{
+    rootId: string;
+    title: string | null;
+    cwd: string;
+    agents: Array<{
+      id: string;
+      path: string;
+      label: string;
+      status: string;
+      model: string;
+      thinkingMode: string;
+    }>;
   }>;
 };
 
@@ -104,6 +146,7 @@ export type HistoryEntry =
   | ForkedHistoryEntry
   | ResumeHintHistoryEntry
   | BackgroundProcessesHistoryEntry
+  | CollaborationHistoryEntry
   | CompactedHistoryEntry
   | ToolHistoryEntry;
 

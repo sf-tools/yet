@@ -21,8 +21,11 @@ export type FileMutation = {
 
 export type Tool = {
   name: string;
+  namespace?: string;
+  namespaceDescription?: string;
   description: string;
   inputSchema: JsonSchema;
+  outputSchema?: JsonSchema;
   execute(input: unknown): Promise<ToolExecutionResult>;
 };
 
@@ -68,6 +71,11 @@ export type ToolFactoryOptions = {
   scheduleLoopWakeup?: (
     request: ScheduleLoopWakeupRequest,
   ) => ScheduleLoopWakeupResult;
+  collaboration?: {
+    agentId: string;
+    agentPath: string;
+    control: import('@/agent/collaboration/control').AgentControl;
+  };
 };
 
 export function asObject(value: unknown, toolName: string): Record<string, unknown> {

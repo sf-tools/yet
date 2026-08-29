@@ -2,6 +2,17 @@ import { handleCliArgs } from '@/cli';
 
 const cli = handleCliArgs();
 if (cli.kind === 'exit') process.exit(cli.code);
+if (cli.kind === 'agents-daemon') {
+  const { runAgentsDaemon } = await import('@/agent/daemon/server');
+  await runAgentsDaemon();
+  await new Promise<never>(() => {});
+} else if (cli.kind === 'agents') {
+  const { runAgentsDashboard } = await import('@/agent/daemon/dashboard');
+  await runAgentsDashboard();
+  process.exit(0);
+}
+
+if (cli.kind !== 'start') process.exit(0);
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) {
   process.stderr.write('Yet requires an interactive terminal.\n');

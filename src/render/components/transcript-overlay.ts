@@ -99,7 +99,7 @@ export function renderTranscriptViewport(
   content: Block,
   scrollOffset: number,
   ctx: RenderContext,
-  options: { backtracking?: boolean } = {},
+  options: { backtracking?: boolean; agentLabel?: string; viewOnly?: boolean } = {},
 ): { block: Block; maxScroll: number } {
   return renderTranscriptViewportParts([content], scrollOffset, ctx, options);
 }
@@ -128,7 +128,7 @@ export function renderTranscriptViewportParts(
   contentParts: readonly Block[],
   scrollOffset: number,
   ctx: RenderContext,
-  options: { backtracking?: boolean } = {},
+  options: { backtracking?: boolean; agentLabel?: string; viewOnly?: boolean } = {},
 ): { block: Block; maxScroll: number } {
   const contentHeight = Math.max(1, ctx.height - 4);
   const contentLength = contentParts.reduce((total, part) => total + part.length, 0);
@@ -149,7 +149,9 @@ export function renderTranscriptViewportParts(
       line(span(' ↑/↓ to scroll   pgup/pgdn to page   home/end to jump', chalk.dim)),
       line(span(
         truncateToWidth(
-          options.backtracking
+          options.agentLabel
+            ? `${options.agentLabel}   view only - send instructions through Main   ⌥ + ←/→ to switch   q to return`
+            : options.backtracking
             ? ' q to quit   esc/← to edit prev   → to edit next   enter to edit message'
             : ' q to quit   esc to edit prev',
           ctx.width,
